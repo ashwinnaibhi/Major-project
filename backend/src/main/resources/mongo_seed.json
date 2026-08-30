@@ -1,0 +1,37 @@
+{
+  "users": [
+    { "_id": "usr-1", "name": "System Admin", "email": "admin@bloodbank.org", "password": "$2a$10$e7aW/Z.1M96jK4/8w401d.R.7sL.F7f8yS0xWkXk6y5n9z8qX8Jeq", "phone": "+1-800-555-0199", "role": "ROLE_ADMIN", "status": "ACTIVE" },
+    { "_id": "usr-2", "name": "City General Hospital", "email": "contact@cityhospital.org", "password": "$2a$10$e7aW/Z.1M96jK4/8w401d.R.7sL.F7f8yS0xWkXk6y5n9z8qX8Jeq", "phone": "+1-800-555-0101", "role": "ROLE_HOSPITAL", "status": "ACTIVE" },
+    { "_id": "usr-3", "name": "St. Jude Emergency Center", "email": "emergency@stjude.org", "password": "$2a$10$e7aW/Z.1M96jK4/8w401d.R.7sL.F7f8yS0xWkXk6y5n9z8qX8Jeq", "phone": "+1-800-555-0102", "role": "ROLE_HOSPITAL", "status": "ACTIVE" },
+    { "_id": "usr-4", "name": "John Doe", "email": "john.doe@email.com", "password": "$2a$10$e7aW/Z.1M96jK4/8w401d.R.7sL.F7f8yS0xWkXk6y5n9z8qX8Jeq", "phone": "+1-555-0144", "role": "ROLE_DONOR", "status": "ACTIVE" },
+    { "_id": "usr-5", "name": "Sarah Jenkins", "email": "sarah.j@email.com", "password": "$2a$10$e7aW/Z.1M96jK4/8w401d.R.7sL.F7f8yS0xWkXk6y5n9z8qX8Jeq", "phone": "+1-555-0145", "role": "ROLE_DONOR", "status": "ACTIVE" }
+  ],
+  "donors": [
+    {
+      "_id": "dnr-1", "user_id": "usr-4", "donor_id": "DNR-1001", "name": "John Doe", "email": "john.doe@email.com", "blood_group": "O+",
+      "age": 29, "gender": "Male", "location": "Zone A (Central)", "distance_km": 3.5, "last_donation_days": 150,
+      "total_donations": 4, "donation_frequency_per_year": 3, "previous_response_rate": 0.95, "preferred_time": "Morning",
+      "health_eligibility_score": 98, "availability_status": "HIGH", "availability_score": 94.5
+    },
+    {
+      "_id": "dnr-2", "user_id": "usr-5", "donor_id": "DNR-1002", "name": "Sarah Jenkins", "email": "sarah.j@email.com", "blood_group": "A-",
+      "age": 34, "gender": "Female", "location": "Zone B (North)", "distance_km": 6.2, "last_donation_days": 125,
+      "total_donations": 6, "donation_frequency_per_year": 4, "previous_response_rate": 0.88, "preferred_time": "Afternoon",
+      "health_eligibility_score": 95, "availability_status": "HIGH", "availability_score": 89.0
+    }
+  ],
+  "blood_inventory": [
+    { "_id": "inv-1", "blood_group": "O+", "component_type": "Whole Blood", "units_available": 45, "expiry_date": "2026-09-15", "status": "AVAILABLE" },
+    { "_id": "inv-2", "blood_group": "O-", "component_type": "Whole Blood", "units_available": 8, "expiry_date": "2026-09-01", "status": "LOW_STOCK" },
+    { "_id": "inv-3", "blood_group": "A+", "component_type": "Whole Blood", "units_available": 32, "expiry_date": "2026-09-20", "status": "AVAILABLE" },
+    { "_id": "inv-4", "blood_group": "A-", "component_type": "Whole Blood", "units_available": 12, "expiry_date": "2026-08-30", "status": "AVAILABLE" },
+    { "_id": "inv-5", "blood_group": "B+", "component_type": "Whole Blood", "units_available": 28, "expiry_date": "2026-09-10", "status": "AVAILABLE" },
+    { "_id": "inv-6", "blood_group": "B-", "component_type": "Whole Blood", "units_available": 5, "expiry_date": "2026-08-25", "status": "LOW_STOCK" },
+    { "_id": "inv-7", "blood_group": "AB+", "component_type": "Whole Blood", "units_available": 18, "expiry_date": "2026-09-25", "status": "AVAILABLE" },
+    { "_id": "inv-8", "blood_group": "AB-", "component_type": "Whole Blood", "units_available": 4, "expiry_date": "2026-08-28", "status": "LOW_STOCK" }
+  ],
+  "blood_requests": [
+    { "_id": "req-1", "hospital_name": "City General Hospital", "blood_group": "O-", "units_needed": 4, "urgency_level": "EMERGENCY", "patient_name": "Trauma Unit Patient #402", "status": "PENDING", "request_date": "2026-08-13 08:30:00" },
+    { "_id": "req-2", "hospital_name": "St. Jude Emergency Center", "blood_group": "B-", "units_needed": 2, "urgency_level": "HIGH", "patient_name": "Surgical Patient #109", "status": "APPROVED", "request_date": "2026-08-12 14:15:00" }
+  ]
+}
