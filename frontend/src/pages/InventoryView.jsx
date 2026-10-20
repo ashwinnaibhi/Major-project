@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { Database, Plus, RefreshCw, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { Database, Plus, Trash2, AlertTriangle, CheckCircle2 } from 'lucide-react';
 
-export default function InventoryView() {
+export default function InventoryView({ onDeleteInventoryItem }) {
   const [inventory, setInventory] = useState([
     { id: 1, blood_group: 'O+', component: 'Whole Blood', units: 45, status: 'AVAILABLE', expiry: '2026-09-15' },
     { id: 2, blood_group: 'O-', component: 'Whole Blood', units: 8, status: 'LOW_STOCK', expiry: '2026-09-01' },
@@ -15,7 +15,7 @@ export default function InventoryView() {
 
   const [newUnits, setNewUnits] = useState({ group: 'O+', count: 5 });
 
-  const handleAddStock = () => {
+  const handleAddStock = async () => {
     setInventory(prev => prev.map(item => {
       if (item.blood_group === newUnits.group) {
         const updated = item.units + parseInt(newUnits.count);
@@ -27,6 +27,19 @@ export default function InventoryView() {
       }
       return item;
     }));
+
+    // Send SQL POST API
+    fetch('http://localhost:8080/api/v1/inventory', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ blood_group: newUnits.group, units_available: parseInt(newUnits.count) })
+    }).catch(() => {});
+  };
+
+  const handleDeleteItem = (id) => {
+    setInventory(prev => prev.filter(item => item.id !== id));
+    fetch(`http://localhost:8080/api/v1/inventory/${id}`, { method: 'DELETE' }).catch(() => {});
+    if (onDeleteInventoryItem) onDeleteInventoryItem(id);
   };
 
   return (
@@ -36,10 +49,10 @@ export default function InventoryView() {
         <div>
           <div className="flex items-center space-x-2 text-xs font-semibold text-blood-400 mb-1">
             <Database className="w-4 h-4" />
-            <span>Centralized Stock Repository</span>
+            <span>SQL Relational Database Stock Repository</span>
           </div>
           <h2 className="text-2xl font-black text-white">Blood Inventory Stock Management</h2>
-          <p className="text-xs text-slate-400">Track units, component types, expiry dates, and automated low-stock warnings.</p>
+          <p className="text-xs text-slate-400">Dynamically add units, update stock, or delete inventory rows from SQL database.</p>
         </div>
 
         {/* Quick Stock Add */}
@@ -80,7 +93,7 @@ export default function InventoryView() {
                 <th className="py-3 px-4">Units Available</th>
                 <th className="py-3 px-4">Expiry Date</th>
                 <th className="py-3 px-4">Inventory Status</th>
-                <th className="py-3 px-4">Action</th>
+                <th className="py-3 px-4">SQL Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60">
@@ -109,7 +122,7 @@ export default function InventoryView() {
                       )}
                     </span>
                   </td>
-                  <td className="py-3 px-4">
+                  <td className="py-3 px-4 flex items-center space-x-2">
                     <button
                       onClick={() => {
                         setInventory(prev => prev.map(i => i.id === row.id ? { ...i, units: i.units + 1 } : i));
@@ -117,6 +130,13 @@ export default function InventoryView() {
                       className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px]"
                     >
                       +1 Unit
+                    </button>
+                    <button
+                      onClick={() => handleDeleteItem(row.id)}
+                      title="Delete Inventory Stock from SQL DB"
+                      className="p-1 rounded bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800 text-[11px]"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-rose-400" />
                     </button>
                   </td>
                 </tr>

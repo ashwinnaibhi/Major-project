@@ -1,8 +1,21 @@
 import React from 'react';
-import { LayoutDashboard, BrainCircuit, Search, Database, FileText, CalendarCheck, Shield, Award } from 'lucide-react';
+import { 
+  LayoutDashboard, BrainCircuit, Search, Database, FileText, 
+  CalendarCheck, Shield, Award, User, History, Bell, Calendar 
+} from 'lucide-react';
 
-export default function Sidebar({ activeTab, setActiveTab }) {
-  const navItems = [
+export default function Sidebar({ activeTab, setActiveTab, activeRole }) {
+  // Navigation for DONOR role
+  const donorNavItems = [
+    { id: 'donor_dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'donor_profile', label: 'My Profile', icon: User },
+    { id: 'donor_history', label: 'Donation History', icon: History },
+    { id: 'donor_appointments', label: 'Appointments', icon: Calendar },
+    { id: 'donor_notifications', label: 'Notifications', icon: Bell, badge: 'Alerts' },
+  ];
+
+  // Standard Management Navigation for ADMIN, HOSPITAL, STAFF
+  const defaultNavItems = [
     { id: 'dashboard', label: 'Dashboard & Analytics', icon: LayoutDashboard },
     { id: 'emergency', label: 'Emergency Donor Search', icon: Search, badge: 'Live ML' },
     { id: 'ml_predictor', label: 'ML Availability Simulator', icon: BrainCircuit },
@@ -11,15 +24,19 @@ export default function Sidebar({ activeTab, setActiveTab }) {
     { id: 'appointments', label: 'Appointments Calendar', icon: CalendarCheck },
   ];
 
+  const navItems = activeRole === 'DONOR' ? donorNavItems : defaultNavItems;
+
   return (
     <aside className="w-64 glass-panel border-r border-slate-800 min-h-[calc(100vh-65px)] p-4 flex flex-col justify-between">
       <div className="space-y-6">
         <div>
-          <p className="px-3 text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-3">Navigation</p>
+          <p className="px-3 text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-3">
+            {activeRole === 'DONOR' ? 'Donor Portal' : 'Navigation'}
+          </p>
           <nav className="space-y-1">
             {navItems.map((item) => {
               const Icon = item.icon;
-              const isActive = activeTab === item.id;
+              const isActive = activeTab === item.id || (activeRole === 'DONOR' && activeTab === 'dashboard' && item.id === 'donor_dashboard');
               return (
                 <button
                   key={item.id}

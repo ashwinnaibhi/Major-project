@@ -1,38 +1,60 @@
 import React, { useState } from 'react';
 import StatCard from '../components/StatCard';
 import MLPredictionBadge from '../components/MLPredictionBadge';
-import { Building2, Plus, Search, ShieldAlert, FileText, CheckCircle2, Clock, MapPin, Send } from 'lucide-react';
+import { Plus, FileText, CheckCircle2, Clock, MapPin, AlertCircle, Building2 } from 'lucide-react';
 
 export default function HospitalDashboard({ donorsList = [], requestsList = [], onRequestCreated }) {
-  const [hospitalInfo] = useState({
-    name: 'City General Hospital',
-    license: 'HOSP-LIC-2024-8891',
-    address: '100 Healthcare Blvd, Suite 400',
-    contact: 'Dr. Alice Smith (+1-800-555-0101)'
-  });
-
   const [showReqModal, setShowReqModal] = useState(false);
   const [newRequest, setNewRequest] = useState({
+    hospital_name: 'City General Hospital',
+    hospital_address: '100 Healthcare Blvd, Suite 400',
+    contact_phone: '+1-800-555-0101',
     blood_group: 'O-',
     units: 2,
     urgency: 'EMERGENCY',
     patient: 'Emergency Trauma Ward #12'
   });
+  const [formError, setFormError] = useState('');
+
+  const pendingCount = requestsList.filter(r => (r.status || 'PENDING') === 'PENDING').length;
+  const fulfilledCount = requestsList.filter(r => r.status === 'APPROVED' || r.status === 'ALLOCATED').length;
+  const emergencyCount = requestsList.filter(r => (r.urgency || r.urgency_level) === 'EMERGENCY').length;
 
   const handleCreateRequest = async (e) => {
     e.preventDefault();
+    setFormError('');
+
+    if (!newRequest.hospital_name.trim()) {
+      setFormError('Hospital Name is required.');
+      return;
+    }
+    if (!newRequest.hospital_address.trim()) {
+      setFormError('Hospital Address is required.');
+      return;
+    }
+    if (parseInt(newRequest.units) <= 0 || isNaN(parseInt(newRequest.units))) {
+      setFormError('Units required must be greater than 0.');
+      return;
+    }
+    if (!newRequest.patient.trim()) {
+      setFormError('Patient Name or Ward Details are required.');
+      return;
+    }
+
     const reqObj = {
       id: `REQ-${Math.floor(100 + Math.random() * 900)}`,
-      hospital_name: hospitalInfo.name,
-      hospital: hospitalInfo.name,
+      hospital_name: newRequest.hospital_name.trim(),
+      hospital: newRequest.hospital_name.trim(),
+      hospital_address: newRequest.hospital_address.trim(),
+      contact_phone: newRequest.contact_phone.trim(),
       blood_group: newRequest.blood_group,
       blood: newRequest.blood_group,
       units_needed: parseInt(newRequest.units),
       units: parseInt(newRequest.units),
       urgency_level: newRequest.urgency,
       urgency: newRequest.urgency,
-      patient_name: newRequest.patient,
-      patient: newRequest.patient,
+      patient_name: newRequest.patient.trim(),
+      patient: newRequest.patient.trim(),
       status: 'PENDING',
       request_date: new Date().toISOString().slice(0, 16).replace('T', ' ')
     };
@@ -46,55 +68,72 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
   return (
     <div className="space-y-6">
       
-      {/* Hospital Banner */}
-      <div className="p-6 rounded-2xl glass-panel bg-gradient-to-r from-slate-900 via-slate-900 to-blood-950/40 border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-        <div className="flex items-center space-x-4">
-          <div className="w-14 h-14 rounded-2xl bg-slate-800 border border-slate-700 flex items-center justify-center text-blood-400">
-            <Building2 className="w-7 h-7" />
-          </div>
-          <div>
-            <div className="flex items-center space-x-2">
-              <h2 className="text-2xl font-black text-white">{hospitalInfo.name}</h2>
-              <span className="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300 font-mono">
-                {hospitalInfo.license}
-              </span>
-            </div>
-            <p className="text-xs text-slate-400 mt-1">{hospitalInfo.address} &bull; {hospitalInfo.contact}</p>
-          </div>
-        </div>
-
-        <button
-          onClick={() => setShowReqModal(true)}
-          className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-blood-600 to-blood-700 hover:from-blood-500 hover:to-blood-600 text-white font-bold text-xs shadow-lg glow-red flex items-center space-x-2 transition-all"
-        >
-          <Plus className="w-4 h-4" />
-          <span>New Emergency Requisition</span>
-        </button>
-      </div>
-
       {/* Hospital Metrics */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard title="Active Requisitions" value={`${requestsList.length} Requests`} subtitle={`${requestsList.filter(r => (r.urgency || r.urgency_level) === 'EMERGENCY').length} Emergency Pending`} icon={FileText} color="blood" />
-        <StatCard title="Fulfilled Requests" value={`${requestsList.filter(r => r.status === 'FULFILLED' || r.status === 'APPROVED').length} Fulfilled`} subtitle="100% fulfill rate" icon={CheckCircle2} color="emerald" />
-        <StatCard title="Nearby High Donors" value={`${donorsList.length} Registered`} subtitle="Within 10 km radius" icon={MapPin} color="blue" />
-        <StatCard title="Avg Response Dispatch" value="14 Mins" subtitle="Prioritized by ML" icon={Clock} color="amber" />
+        <StatCard 
+          title="Active Requisitions" 
+          value={`${requestsList.length} Total`} 
+          subtitle={`${pendingCount} Pending Verification`} 
+          icon={FileText} 
+          color="blood" 
+        />
+        <StatCard 
+          title="Fulfilled Requests" 
+          value={`${fulfilledCount} Allocated`} 
+          subtitle="Processed by staff" 
+          icon={CheckCircle2} 
+          color="emerald" 
+        />
+        <StatCard 
+          title="Emergency Priority" 
+          value={`${emergencyCount} Calls`} 
+          subtitle="Critical priority" 
+          icon={AlertCircle} 
+          color="amber" 
+        />
+        <StatCard 
+          title="Nearby Matched Donors" 
+          value={`${donorsList.length} Registered`} 
+          subtitle="Ready for emergency dispatch" 
+          icon={MapPin} 
+          color="blue" 
+        />
       </div>
 
-      {/* Main Grid: Hospital Requisitions & Recommended Donors */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        {/* Hospital Requisitions Table */}
-        <div className="lg:col-span-2 p-5 rounded-2xl glass-panel border border-slate-800 space-y-4">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-            <h3 className="text-sm font-bold text-white">Your Blood Requisitions</h3>
-            <span className="text-xs text-slate-400">Track real-time status across system</span>
+      {/* Main Focus: Hospital Blood Requisitions Section */}
+      <div className="p-6 rounded-2xl glass-panel border border-slate-800 space-y-4">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+          <div>
+            <div className="flex items-center space-x-2 text-xs font-semibold text-blood-400 mb-1">
+              <Building2 className="w-4 h-4" />
+              <span>Hospital Operations Center</span>
+            </div>
+            <h2 className="text-2xl font-black text-white">Hospital Blood Requisitions</h2>
+            <p className="text-xs text-slate-400">Submit urgent and routine blood requests; updates sync in real-time with Blood Bank staff.</p>
           </div>
 
-          <div className="overflow-x-auto">
+          <button
+            onClick={() => { setFormError(''); setShowReqModal(true); }}
+            className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-blood-600 to-blood-700 hover:from-blood-500 hover:to-blood-600 text-white font-bold text-xs shadow-lg glow-red flex items-center space-x-2 transition-all"
+          >
+            <Plus className="w-4 h-4" />
+            <span>New Emergency Requisition</span>
+          </button>
+        </div>
+
+        {/* Requisitions Table */}
+        <div className="overflow-x-auto">
+          {requestsList.length === 0 ? (
+            <div className="p-8 text-center text-slate-500 text-xs">
+              No requisitions created yet. Click "New Emergency Requisition" to request blood units.
+            </div>
+          ) : (
             <table className="w-full text-left text-xs text-slate-300">
               <thead className="bg-slate-900/90 text-slate-400 uppercase text-[10px] tracking-wider border-b border-slate-800">
                 <tr>
                   <th className="py-2.5 px-3">Req ID</th>
+                  <th className="py-2.5 px-3">Hospital Name</th>
+                  <th className="py-2.5 px-3">Hospital Address</th>
                   <th className="py-2.5 px-3">Blood Group</th>
                   <th className="py-2.5 px-3">Units</th>
                   <th className="py-2.5 px-3">Urgency</th>
@@ -103,116 +142,168 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60">
-                {requestsList.map((req, idx) => (
-                  <tr key={req.id || req._id || idx} className="hover:bg-slate-900/40">
-                    <td className="py-2.5 px-3 font-mono text-slate-400">{req.id || req._id || `REQ-${idx+1}`}</td>
-                    <td className="py-2.5 px-3 font-extrabold text-blood-400 text-sm">{req.blood || req.blood_group}</td>
-                    <td className="py-2.5 px-3 font-semibold text-white">{req.units || req.units_needed} units</td>
-                    <td className="py-2.5 px-3">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold ${
-                        (req.urgency || req.urgency_level) === 'EMERGENCY'
-                          ? 'bg-blood-950 text-blood-400 border border-blood-800 animate-pulse'
-                          : 'bg-amber-950 text-amber-400 border border-amber-800'
-                      }`}>
-                        {req.urgency || req.urgency_level}
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-3 text-slate-400">{req.patient || req.patient_name}</td>
-                    <td className="py-2.5 px-3 font-bold">
-                      <span className={req.status === 'APPROVED' || req.status === 'FULFILLED' ? 'text-emerald-400' : 'text-amber-400'}>
-                        {req.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                {requestsList.map((req, idx) => {
+                  const reqId = req.id || req._id || `REQ-${idx + 1}`;
+                  const isApproved = req.status === 'APPROVED';
+                  const isAllocated = req.status === 'ALLOCATED';
+                  const isRejected = req.status === 'REJECTED';
+
+                  return (
+                    <tr key={reqId} className="hover:bg-slate-900/40">
+                      <td className="py-2.5 px-3 font-mono text-slate-400">{reqId}</td>
+                      <td className="py-2.5 px-3 font-bold text-white">
+                        {req.hospital_name || req.hospital}
+                        {req.contact_phone && (
+                          <span className="block text-[10px] text-slate-400 font-mono">{req.contact_phone}</span>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3 text-slate-400 max-w-xs truncate" title={req.hospital_address || ''}>
+                        {req.hospital_address || 'Address on file'}
+                      </td>
+                      <td className="py-2.5 px-3 font-extrabold text-blood-400 text-sm">
+                        {req.blood || req.blood_group}
+                      </td>
+                      <td className="py-2.5 px-3 font-semibold text-white">
+                        {req.units || req.units_needed} units
+                      </td>
+                      <td className="py-2.5 px-3">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold ${
+                          (req.urgency || req.urgency_level) === 'EMERGENCY'
+                            ? 'bg-blood-950 text-blood-400 border border-blood-800 animate-pulse'
+                            : 'bg-amber-950 text-amber-400 border border-amber-800'
+                        }`}>
+                          {req.urgency || req.urgency_level}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-slate-400">{req.patient || req.patient_name}</td>
+                      <td className="py-2.5 px-3 font-bold">
+                        <span className={`${
+                          isApproved ? 'text-emerald-400' :
+                          isAllocated ? 'text-sky-400' :
+                          isRejected ? 'text-rose-400' : 'text-amber-400'
+                        }`}>
+                          {req.status || 'PENDING'}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
-          </div>
+          )}
         </div>
-
-        {/* Prioritized Donor Recommendation List */}
-        <div className="p-5 rounded-2xl glass-panel border border-slate-800 space-y-4">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-            <h3 className="text-sm font-bold text-white flex items-center space-x-2">
-              <ShieldAlert className="w-4 h-4 text-blood-400" />
-              <span>ML High-Availability Donors</span>
-            </h3>
-          </div>
-
-          <div className="space-y-3">
-            {donorsList.slice(0, 4).map((d) => (
-              <div key={d.id} className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-white">{d.name} ({d.blood})</span>
-                  <MLPredictionBadge category={d.category || 'HIGH'} score={d.availabilityScore || 91.5} />
-                </div>
-                <div className="flex items-center justify-between text-[11px] text-slate-400">
-                  <span>Dist: {d.distance || 4.0} km</span>
-                  <a href={`tel:${d.phone}`} className="text-blood-400 font-semibold hover:underline">
-                    {d.phone}
-                  </a>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
       </div>
 
-      {/* Modal for Creating Blood Requisition */}
+      {/* Modal for Creating Extended Blood Requisition */}
       {showReqModal && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md p-6 rounded-2xl glass-panel border border-slate-800 space-y-4">
-            <h3 className="text-lg font-extrabold text-white">Create Hospital Blood Request</h3>
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-lg p-6 rounded-2xl glass-panel border border-slate-800 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+              <h3 className="text-lg font-extrabold text-white">Create Hospital Blood Request</h3>
+              <span className="text-[10px] bg-blood-950 text-blood-400 border border-blood-800 px-2 py-0.5 rounded font-bold">
+                Live Staff Sync
+              </span>
+            </div>
+
+            {formError && (
+              <div className="p-3 rounded-xl bg-rose-950/80 border border-rose-800 text-rose-300 text-xs font-semibold">
+                {formError}
+              </div>
+            )}
+
             <form onSubmit={handleCreateRequest} className="space-y-3 text-xs">
-              <div>
-                <label className="text-slate-400 block mb-1 font-semibold">Blood Group Required</label>
-                <select
-                  value={newRequest.blood_group}
-                  onChange={(e) => setNewRequest({ ...newRequest, blood_group: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
-                >
-                  {['O+', 'O-', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-'].map(b => (
-                    <option key={b} value={b}>{b}</option>
-                  ))}
-                </select>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-slate-300 block mb-1 font-semibold">Hospital Name *</label>
+                  <input
+                    type="text"
+                    required
+                    value={newRequest.hospital_name}
+                    onChange={(e) => setNewRequest({ ...newRequest, hospital_name: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blood-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-slate-300 block mb-1 font-semibold">Contact Phone Number</label>
+                  <input
+                    type="tel"
+                    value={newRequest.contact_phone}
+                    onChange={(e) => setNewRequest({ ...newRequest, contact_phone: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blood-500"
+                    placeholder="+1-800-555-0101"
+                  />
+                </div>
               </div>
 
               <div>
-                <label className="text-slate-400 block mb-1 font-semibold">Units Required</label>
-                <input
-                  type="number" min="1" max="20"
-                  value={newRequest.units}
-                  onChange={(e) => setNewRequest({ ...newRequest, units: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
-                />
-              </div>
-
-              <div>
-                <label className="text-slate-400 block mb-1 font-semibold">Urgency Level</label>
-                <select
-                  value={newRequest.urgency}
-                  onChange={(e) => setNewRequest({ ...newRequest, urgency: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
-                >
-                  <option value="EMERGENCY">EMERGENCY (Critical Need)</option>
-                  <option value="HIGH">HIGH (Urgent Surgery)</option>
-                  <option value="NORMAL">NORMAL (Elective)</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="text-slate-400 block mb-1 font-semibold">Patient Name / Ward Details</label>
-                <input
-                  type="text"
-                  value={newRequest.patient}
-                  onChange={(e) => setNewRequest({ ...newRequest, patient: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
+                <label className="text-slate-300 block mb-1 font-semibold">Hospital Address (Delivery / Trauma Desk) *</label>
+                <textarea
                   required
+                  rows={2}
+                  value={newRequest.hospital_address}
+                  onChange={(e) => setNewRequest({ ...newRequest, hospital_address: e.target.value })}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blood-500"
+                  placeholder="e.g. 100 Healthcare Blvd, Suite 400, Trauma Wing Desk"
                 />
               </div>
 
-              <div className="flex items-center justify-end space-x-2 pt-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-slate-300 block mb-1 font-semibold">Blood Group Required *</label>
+                  <select
+                    value={newRequest.blood_group}
+                    onChange={(e) => setNewRequest({ ...newRequest, blood_group: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-blood-400 font-bold focus:outline-none"
+                  >
+                    {['O+', 'O-', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-'].map(b => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-slate-300 block mb-1 font-semibold">Units Required (Min 1) *</label>
+                  <input
+                    type="number" 
+                    min="1" 
+                    max="50"
+                    required
+                    value={newRequest.units}
+                    onChange={(e) => setNewRequest({ ...newRequest, units: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-slate-300 block mb-1 font-semibold">Urgency Level *</label>
+                  <select
+                    value={newRequest.urgency}
+                    onChange={(e) => setNewRequest({ ...newRequest, urgency: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none"
+                  >
+                    <option value="EMERGENCY">EMERGENCY (Immediate Dispatch)</option>
+                    <option value="HIGH">HIGH (Urgent Surgery)</option>
+                    <option value="NORMAL">NORMAL (Elective Requisition)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-slate-300 block mb-1 font-semibold">Patient Name / Ward Details *</label>
+                  <input
+                    type="text"
+                    required
+                    value={newRequest.patient}
+                    onChange={(e) => setNewRequest({ ...newRequest, patient: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none"
+                    placeholder="e.g. ICU Ward Bed #4"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-800">
                 <button
                   type="button"
                   onClick={() => setShowReqModal(false)}
@@ -222,9 +313,9 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-xl bg-blood-600 hover:bg-blood-500 text-white font-bold"
+                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-blood-600 to-blood-700 hover:from-blood-500 hover:to-blood-600 text-white font-extrabold shadow-md glow-red"
                 >
-                  Submit Request
+                  Submit & Sync with Staff
                 </button>
               </div>
             </form>

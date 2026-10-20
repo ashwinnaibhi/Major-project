@@ -1,7 +1,7 @@
 import React from 'react';
-import { Droplet, Bell, ShieldAlert, User, Cpu, UserPlus, LogIn } from 'lucide-react';
+import { Droplet, ShieldAlert, User, Cpu, LogOut } from 'lucide-react';
 
-export default function Navbar({ activeRole, handleRoleChange, onOpenAuth, currentUser }) {
+export default function Navbar({ activeRole, handleRoleChange, currentUser, onLogout }) {
   // Compute display user info based on activeRole
   const getUserDisplayInfo = () => {
     switch (activeRole) {
@@ -12,10 +12,14 @@ export default function Navbar({ activeRole, handleRoleChange, onOpenAuth, curre
       case 'STAFF':
         return { name: 'Dr. Robert Vance', email: 'staff.vance@bloodbank.org', title: 'Blood Bank Staff' };
       case 'DONOR':
+        const isCustomUser = currentUser && currentUser.isLoggedIn && currentUser.name !== 'System Admin';
+        const dName = isCustomUser ? currentUser.name : 'Donor Portal (Log In Required)';
+        const dEmail = isCustomUser ? currentUser.email : 'Please login/register below';
+        const dBlood = isCustomUser ? (currentUser.blood || currentUser.blood_group || 'O+') : 'N/A';
         return {
-          name: currentUser?.name || 'Registered Donor',
-          email: currentUser?.email || 'donor@email.com',
-          title: `Donor (${currentUser?.blood || currentUser?.blood_group || 'O+'})`
+          name: dName,
+          email: dEmail,
+          title: isCustomUser ? `Registered Donor (${dBlood})` : 'Guest Visitor'
         };
       default:
         return { name: 'System User', email: 'user@bloodbank.org', title: 'User' };
@@ -23,6 +27,7 @@ export default function Navbar({ activeRole, handleRoleChange, onOpenAuth, curre
   };
 
   const userInfo = getUserDisplayInfo();
+  const isDonorLoggedIn = activeRole === 'DONOR' && currentUser && currentUser.isLoggedIn;
 
   return (
     <header className="sticky top-0 z-40 glass-panel border-b border-slate-800 px-6 py-3">
@@ -50,21 +55,12 @@ export default function Navbar({ activeRole, handleRoleChange, onOpenAuth, curre
           <span>Emergency Blood Request Mode Active &bull; ML Optimization Enabled</span>
         </div>
 
-        {/* Right Section: Role Switcher & Auth */}
+        {/* Right Section: Role Switcher & User Status */}
         <div className="flex items-center space-x-4">
           
-          {/* Register / Login CTA Button */}
-          <button
-            onClick={onOpenAuth}
-            className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-blood-600 to-blood-700 hover:from-blood-500 hover:to-blood-600 text-white font-extrabold text-xs shadow-md glow-red flex items-center space-x-1.5 transition-all"
-          >
-            <UserPlus className="w-3.5 h-3.5" />
-            <span>Donor Register / Login</span>
-          </button>
-
           {/* Role Selector dropdown */}
           <div className="flex items-center space-x-2 bg-slate-900/90 p-1 rounded-xl border border-slate-800">
-            <span className="text-xs text-slate-400 px-2 font-medium">Role:</span>
+            <span className="text-xs text-slate-400 px-2 font-medium">Role View:</span>
             {[
               { id: 'ADMIN', label: 'Admin' },
               { id: 'HOSPITAL', label: 'Hospital' },
@@ -93,6 +89,18 @@ export default function Navbar({ activeRole, handleRoleChange, onOpenAuth, curre
               <p className="text-xs font-semibold text-slate-200">{userInfo.name}</p>
               <p className="text-[10px] text-slate-400">{userInfo.title}</p>
             </div>
+
+            {/* Donor Log Out Button (Only shown when donor is logged in) */}
+            {isDonorLoggedIn && (
+              <button
+                onClick={onLogout}
+                title="Log Out of Account"
+                className="px-2.5 py-1.5 rounded-xl bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800 text-xs font-bold flex items-center space-x-1 transition-all"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span className="hidden md:inline">Log Out</span>
+              </button>
+            )}
           </div>
 
         </div>

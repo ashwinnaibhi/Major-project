@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Navbar from './components/Navbar';
 import Sidebar from './components/Sidebar';
 import AuthModal from './components/AuthModal';
@@ -11,105 +11,195 @@ import MLPredictorView from './pages/MLPredictorView';
 import InventoryView from './pages/InventoryView';
 import RequestsView from './pages/RequestsView';
 import AppointmentsView from './pages/AppointmentsView';
+import VerifyEmailPage from './pages/VerifyEmailPage';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [activeRole, setActiveRole] = useState('ADMIN');
   const [isAuthOpen, setIsAuthOpen] = useState(false);
 
-  // 1. Master Donors List (Shared globally)
-  const [donorsList, setDonorsList] = useState([
-    {
-      id: 'DNR-1001', name: 'John Doe', email: 'john.doe@email.com', blood: 'O+', location: 'Zone A (Central)',
-      distance: 3.5, lastDonated: '150 days ago', freq: '3/year', prevResp: '95%', phone: '+1-555-0144',
-      availabilityScore: 94.5, category: 'HIGH', total_donations: 4, last_donation_days: 150, preferred_time: 'Morning'
-    },
-    {
-      id: 'DNR-1002', name: 'Sarah Jenkins', email: 'sarah.j@email.com', blood: 'A-', location: 'Zone B (North)',
-      distance: 6.2, lastDonated: '125 days ago', freq: '4/year', prevResp: '88%', phone: '+1-555-0145',
-      availabilityScore: 89.0, category: 'HIGH', total_donations: 6, last_donation_days: 125, preferred_time: 'Afternoon'
-    },
-    {
-      id: 'DNR-1003', name: 'Michael Brown', email: 'mbrown@email.com', blood: 'B+', location: 'Zone A (Central)',
-      distance: 8.0, lastDonated: '24 days ago', freq: '1/year', prevResp: '40%', phone: '+1-555-0146',
-      availabilityScore: 35.0, category: 'LOW', total_donations: 2, last_donation_days: 24, preferred_time: 'Evening'
-    },
-    {
-      id: 'DNR-1004', name: 'Emily Davis', email: 'emily.d@email.com', blood: 'AB+', location: 'Zone C (South)',
-      distance: 12.5, lastDonated: '215 days ago', freq: '2/year', prevResp: '75%', phone: '+1-555-0147',
-      availabilityScore: 68.5, category: 'MEDIUM', total_donations: 3, last_donation_days: 215, preferred_time: 'Morning'
+  // Check if current route is /verify-email
+  const isVerifyEmailRoute = window.location.pathname.startsWith('/verify-email');
+
+  // Load persisted session from localStorage
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const savedUser = localStorage.getItem('haemopulse_user');
+      if (savedUser) {
+        return JSON.parse(savedUser);
+      }
+    } catch (e) {}
+    return { name: 'System Admin', email: 'admin@bloodbank.org', role: 'ADMIN', isLoggedIn: true };
+  });
+
+  // Master Donors List
+  const [donorsList, setDonorsList] = useState([]);
+
+  // Master Requisitions List
+  const [requestsList, setRequestsList] = useState([]);
+
+  // Fetch initial data from backend SQL
+  const fetchAllData = () => {
+    fetch('http://localhost:8080/api/v1/donors')
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) setDonorsList(data);
+      })
+      .catch(() => {});
+
+    fetch('http://localhost:8080/api/v1/requests')
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) setRequestsList(data);
+      })
+      .catch(() => {});
+  };
+
+  useEffect(() => {
+    fetchAllData();
+  }, []);
+
+  // Update localStorage when currentUser changes
+  useEffect(() => {
+    if (currentUser) {
+      localStorage.setItem('haemopulse_user', JSON.stringify(currentUser));
+    } else {
+      localStorage.removeItem('haemopulse_user');
     }
-  ]);
+  }, [currentUser]);
 
-  // 2. Master Requisitions List (Shared globally)
-  const [requestsList, setRequestsList] = useState([
-    {
-      id: 'REQ-402', hospital_name: 'City General Hospital', hospital: 'City General Hospital',
-      blood_group: 'O-', blood: 'O-', units_needed: 4, units: 4, urgency_level: 'EMERGENCY', urgency: 'EMERGENCY',
-      patient_name: 'Trauma Unit Patient #402', patient: 'Trauma Unit Patient #402', status: 'PENDING', request_date: '2026-08-13 08:30'
-    },
-    {
-      id: 'REQ-109', hospital_name: 'St. Jude Emergency Center', hospital: 'St. Jude Emergency Center',
-      blood_group: 'B-', blood: 'B-', units_needed: 2, units: 2, urgency_level: 'HIGH', urgency: 'HIGH',
-      patient_name: 'Surgical Patient #109', patient: 'Surgical Patient #109', status: 'APPROVED', request_date: '2026-08-12 14:15'
-    }
-  ]);
-
-  const [currentUser, setCurrentUser] = useState({ name: 'System Admin', email: 'admin@bloodbank.org', role: 'ADMIN' });
-
-  // Handle Role Selection (Resets activeTab to dashboard so user returns to selected role page)
+  // Handle Role Change
   const handleRoleChange = (newRole) => {
     setActiveRole(newRole);
+    if (newRole === 'DONOR') {
+      setActiveTab('donor_dashboard');
+      if (!currentUser || currentUser.role !== 'DONOR') {
+        const defaultDonor = donorsList.find(d => d.email === 'john.doe@email.com') || donorsList[0] || {
+          id: 'DNR-1001', name: 'John Doe', email: 'john.doe@email.com', blood_group: 'O+', role: 'DONOR', is_verified: true, isLoggedIn: true
+        };
+        setCurrentUser({ ...defaultDonor, role: 'DONOR', isLoggedIn: true, is_verified: defaultDonor.is_verified ?? true });
+      }
+    } else {
+      setActiveTab('dashboard');
+    }
+  };
+
+  // Handle Login/Register Success
+  const handleAuthSuccess = (authenticatedUser) => {
+    setCurrentUser(authenticatedUser);
+    const targetRole = authenticatedUser.role || 'DONOR';
+    setActiveRole(targetRole);
+
+    if (targetRole === 'DONOR') {
+      setActiveTab('donor_dashboard');
+    } else {
+      setActiveTab('dashboard');
+    }
+
+    // Refresh lists from DB
+    fetchAllData();
+  };
+
+  // Handle Logout
+  const handleLogout = () => {
+    localStorage.removeItem('haemopulse_user');
+    setCurrentUser({ name: 'System Admin', email: 'admin@bloodbank.org', role: 'ADMIN', isLoggedIn: true });
+    setActiveRole('ADMIN');
     setActiveTab('dashboard');
   };
 
-  const handleAuthSuccess = (newDonor) => {
-    const formattedDonor = {
-      id: newDonor.donor_id || `DNR-${Math.floor(1000 + Math.random() * 9000)}`,
-      name: newDonor.name,
-      email: newDonor.email,
-      blood: newDonor.blood_group || 'O+',
-      blood_group: newDonor.blood_group || 'O+',
-      location: newDonor.location || 'Zone A (Central)',
-      distance: 4.0,
-      lastDonated: '180 days ago',
-      freq: '2/year',
-      prevResp: '90%',
-      phone: newDonor.phone || '+1-555-0199',
-      availabilityScore: 91.5,
-      category: 'HIGH',
-      total_donations: 0,
-      last_donation_days: 180,
-      preferred_time: newDonor.preferred_time || 'Morning'
-    };
-
-    setDonorsList(prev => [formattedDonor, ...prev]);
-    setCurrentUser(formattedDonor);
-    setActiveRole('DONOR');
-    setActiveTab('dashboard');
+  // Hospital Request Creation with Immediate DB Sync
+  const handleRequestCreated = async (newReq) => {
+    try {
+      const res = await fetch('http://localhost:8080/api/v1/requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hospital_name: newReq.hospital_name || newReq.hospital,
+          hospital_address: newReq.hospital_address,
+          contact_phone: newReq.contact_phone || '',
+          blood_group: newReq.blood_group || newReq.blood,
+          units_needed: parseInt(newReq.units_needed || newReq.units),
+          urgency_level: newReq.urgency_level || newReq.urgency,
+          patient_name: newReq.patient_name || newReq.patient
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setRequestsList(prev => [data, ...prev]);
+      } else {
+        setRequestsList(prev => [newReq, ...prev]);
+      }
+    } catch (e) {
+      setRequestsList(prev => [newReq, ...prev]);
+    }
   };
 
-  const handleRequestCreated = (newReq) => {
-    setRequestsList(prev => [newReq, ...prev]);
-    // POST to backend API
-    fetch('http://localhost:8080/api/v1/requests', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newReq)
-    }).catch(() => {});
+  // Request Status Change with Immediate DB Sync
+  const handleRequestStatusChange = async (id, newStatus) => {
+    setRequestsList(prev => prev.map(r => ((r.id === id || r._id === id) ? { ...r, status: newStatus } : r)));
+
+    try {
+      await fetch(`http://localhost:8080/api/v1/requests/${id}/status?status=${encodeURIComponent(newStatus)}`, {
+        method: 'PUT'
+      });
+    } catch (e) {}
   };
 
-  const handleRequestStatusChange = (id, newStatus) => {
-    setRequestsList(prev => prev.map(r => (r.id === id || r._id === id) ? { ...r, status: newStatus } : r));
+  // Delete Donor
+  const handleDeleteDonor = (donorId) => {
+    setDonorsList(prev => prev.filter(d => d.id !== donorId && d.donor_id !== donorId));
+    fetch(`http://localhost:8080/api/v1/donors/${donorId}`, { method: 'DELETE' }).catch(() => {});
   };
 
+  // Delete Request
+  const handleRequestDeleted = (reqId) => {
+    setRequestsList(prev => prev.filter(r => r.id !== reqId && r._id !== reqId));
+    fetch(`http://localhost:8080/api/v1/requests/${reqId}`, { method: 'DELETE' }).catch(() => {});
+  };
+
+  // Render Page Content
   const renderContent = () => {
+    // If donor tab selected
+    if (activeRole === 'DONOR' || activeTab.startsWith('donor_')) {
+      return (
+        <DonorDashboard 
+          currentUser={currentUser} 
+          requestsList={requestsList} 
+          onAuthSuccess={handleAuthSuccess}
+          onLogout={handleLogout}
+          activeSubTab={activeTab}
+        />
+      );
+    }
+
     switch (activeTab) {
       case 'dashboard':
-        if (activeRole === 'DONOR') return <DonorDashboard currentUser={currentUser} requestsList={requestsList} />;
-        if (activeRole === 'HOSPITAL') return <HospitalDashboard donorsList={donorsList} requestsList={requestsList} onRequestCreated={handleRequestCreated} />;
-        if (activeRole === 'STAFF') return <StaffDashboard donorsList={donorsList} requestsList={requestsList} onRequestStatusChange={handleRequestStatusChange} />;
-        return <AdminDashboard onNavigate={(tab) => setActiveTab(tab)} donorsList={donorsList} />;
+        if (activeRole === 'HOSPITAL') {
+          return (
+            <HospitalDashboard 
+              donorsList={donorsList} 
+              requestsList={requestsList} 
+              onRequestCreated={handleRequestCreated} 
+            />
+          );
+        }
+        if (activeRole === 'STAFF') {
+          return (
+            <StaffDashboard 
+              requestsList={requestsList} 
+              onRequestStatusChange={handleRequestStatusChange} 
+            />
+          );
+        }
+        return (
+          <AdminDashboard 
+            onNavigate={(tab) => setActiveTab(tab)} 
+            donorsList={donorsList} 
+            onDeleteDonor={handleDeleteDonor} 
+          />
+        );
+
       case 'emergency':
         return <EmergencySearch donorsList={donorsList} />;
       case 'ml_predictor':
@@ -117,25 +207,41 @@ export default function App() {
       case 'inventory':
         return <InventoryView />;
       case 'requests':
-        return <RequestsView requestsList={requestsList} onRequestCreated={handleRequestCreated} onRequestStatusChange={handleRequestStatusChange} />;
+        return (
+          <RequestsView 
+            requestsList={requestsList} 
+            onRequestCreated={handleRequestCreated} 
+            onRequestStatusChange={handleRequestStatusChange} 
+            onRequestDeleted={handleRequestDeleted} 
+          />
+        );
       case 'appointments':
         return <AppointmentsView />;
       default:
-        return <AdminDashboard onNavigate={(tab) => setActiveTab(tab)} donorsList={donorsList} />;
+        return <AdminDashboard onNavigate={(tab) => setActiveTab(tab)} donorsList={donorsList} onDeleteDonor={handleDeleteDonor} />;
     }
   };
+
+  // If visiting /verify-email URL route
+  if (isVerifyEmailRoute) {
+    return <VerifyEmailPage onVerified={() => { window.location.href = '/'; }} />;
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       <Navbar
         activeRole={activeRole}
         handleRoleChange={handleRoleChange}
-        onOpenAuth={() => setIsAuthOpen(true)}
         currentUser={currentUser}
+        onLogout={handleLogout}
       />
 
       <div className="flex-1 flex">
-        <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
+        <Sidebar 
+          activeTab={activeTab} 
+          setActiveTab={setActiveTab} 
+          activeRole={activeRole}
+        />
         
         <main className="flex-1 p-6 overflow-y-auto max-w-7xl mx-auto w-full">
           {renderContent()}

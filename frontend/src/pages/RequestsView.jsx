@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { FileText, Plus, CheckCircle, XCircle, Clock, ShieldAlert } from 'lucide-react';
+import { FileText, Plus, CheckCircle, XCircle, Clock, ShieldAlert, Trash2 } from 'lucide-react';
 
-export default function RequestsView({ requestsList = [], onRequestCreated, onRequestStatusChange }) {
+export default function RequestsView({ requestsList = [], onRequestCreated, onRequestStatusChange, onRequestDeleted }) {
   const [showModal, setShowModal] = useState(false);
   const [newReq, setNewReq] = useState({
     hospital: 'City General Hospital',
@@ -41,6 +41,12 @@ export default function RequestsView({ requestsList = [], onRequestCreated, onRe
     }
   };
 
+  const handleDeleteRequest = (id) => {
+    if (onRequestDeleted) {
+      onRequestDeleted(id);
+    }
+  };
+
   return (
     <div className="space-y-6">
       
@@ -48,10 +54,10 @@ export default function RequestsView({ requestsList = [], onRequestCreated, onRe
         <div>
           <div className="flex items-center space-x-2 text-xs font-semibold text-blood-400 mb-1">
             <FileText className="w-4 h-4" />
-            <span>Blood Requisition Workflow</span>
+            <span>SQL Relational Database Requisitions</span>
           </div>
-          <h2 className="text-2xl font-black text-white">Hospital Blood Requests</h2>
-          <p className="text-xs text-slate-400">Process emergency and elective blood requests submitted by registered hospitals.</p>
+          <h2 className="text-2xl font-black text-white">Hospital Blood Requests (SQL CRUD)</h2>
+          <p className="text-xs text-slate-400">Add, approve, fulfill, or dynamically delete hospital requisitions from SQL database.</p>
         </div>
 
         <button
@@ -74,7 +80,7 @@ export default function RequestsView({ requestsList = [], onRequestCreated, onRe
                 <th className="py-3 px-4">Urgency Level</th>
                 <th className="py-3 px-4">Patient / Reason</th>
                 <th className="py-3 px-4">Status</th>
-                <th className="py-3 px-4">Action</th>
+                <th className="py-3 px-4">SQL Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60">
@@ -103,9 +109,9 @@ export default function RequestsView({ requestsList = [], onRequestCreated, onRe
                       {req.status}
                     </span>
                   </td>
-                  <td className="py-3 px-4">
+                  <td className="py-3 px-4 flex items-center space-x-2">
                     {req.status === 'PENDING' && (
-                      <div className="flex items-center space-x-2">
+                      <>
                         <button
                           onClick={() => handleUpdateStatus(req.id || req._id, 'APPROVED')}
                           className="px-2.5 py-1 rounded bg-emerald-950 text-emerald-300 hover:bg-emerald-900 border border-emerald-800 text-[11px] font-semibold"
@@ -118,7 +124,7 @@ export default function RequestsView({ requestsList = [], onRequestCreated, onRe
                         >
                           Reject
                         </button>
-                      </div>
+                      </>
                     )}
                     {req.status === 'APPROVED' && (
                       <button
@@ -128,7 +134,13 @@ export default function RequestsView({ requestsList = [], onRequestCreated, onRe
                         Mark Fulfilled
                       </button>
                     )}
-                    {req.status === 'FULFILLED' && <span className="text-slate-500 text-[11px]">Completed</span>}
+                    <button
+                      onClick={() => handleDeleteRequest(req.id || req._id)}
+                      title="Delete Requisition from SQL DB"
+                      className="p-1 rounded bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800 text-[11px]"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                    </button>
                   </td>
                 </tr>
               ))}

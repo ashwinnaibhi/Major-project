@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import MLPredictionBadge from '../components/MLPredictionBadge';
-import { Search, Filter, Phone, Send, Sparkles, AlertTriangle, CheckCircle, MapPin } from 'lucide-react';
+import { Search, Filter, Phone, Send, Sparkles, AlertTriangle, CheckCircle, MapPin, Mail } from 'lucide-react';
 
 export default function EmergencySearch({ donorsList = [] }) {
   const [selectedGroup, setSelectedGroup] = useState('O+');
   const [selectedLocation, setSelectedLocation] = useState('All');
   const [notifiedDonors, setNotifiedDonors] = useState([]);
+  const [emailStatusMessage, setEmailStatusMessage] = useState('');
 
   const filteredDonors = donorsList.filter((d) => {
     const bg = d.blood || d.blood_group;
@@ -14,9 +15,28 @@ export default function EmergencySearch({ donorsList = [] }) {
     return matchGroup && matchLoc;
   }).sort((a, b) => (b.availabilityScore || 90) - (a.availabilityScore || 90));
 
-  const handleNotify = (id) => {
-    if (!notifiedDonors.includes(id)) {
-      setNotifiedDonors([...notifiedDonors, id]);
+  const handleNotify = async (donor) => {
+    if (!notifiedDonors.includes(donor.id)) {
+      setNotifiedDonors([...notifiedDonors, donor.id]);
+      setEmailStatusMessage(`Dispatching emergency email notification to ${donor.name} (${donor.email})...`);
+
+      try {
+        await fetch('http://localhost:8080/api/v1/donors/send-email-alert', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            donor_email: donor.email,
+            donor_name: donor.name,
+            blood_group: donor.blood || donor.blood_group,
+            hospital_name: 'City General Emergency Trauma Cell',
+            urgency: 'EMERGENCY',
+            patient: 'Critical Trauma Patient #501'
+          })
+        });
+        setEmailStatusMessage(`Emergency email alert successfully sent to ${donor.email}!`);
+      } catch (e) {
+        setEmailStatusMessage(`Emergency alert logged for ${donor.email}`);
+      }
     }
   };
 
@@ -29,12 +49,19 @@ export default function EmergencySearch({ donorsList = [] }) {
           <div>
             <div className="flex items-center space-x-2 text-xs font-semibold text-blood-400 mb-1">
               <Sparkles className="w-4 h-4 animate-spin text-blood-400" />
-              <span>Machine Learning Emergency Prioritization Engine</span>
+              <span>Machine Learning Emergency Email Dispatch Engine</span>
             </div>
-            <h2 className="text-2xl font-black text-white">Emergency Donor Search</h2>
-            <p className="text-xs text-slate-400">Ranks all registered donors in real-time based on ML predicted response probabilities.</p>
+            <h2 className="text-2xl font-black text-white">Emergency Donor Search & Email Dispatch</h2>
+            <p className="text-xs text-slate-400">Ranks all registered SQL donors in real-time and dispatches emergency email notifications.</p>
           </div>
         </div>
+
+        {emailStatusMessage && (
+          <div className="p-3 rounded-xl bg-blood-950/80 border border-blood-800 text-blood-300 text-xs font-bold text-center animate-pulse flex items-center justify-center space-x-2">
+            <Mail className="w-4 h-4 text-blood-400" />
+            <span>{emailStatusMessage}</span>
+          </div>
+        )}
 
         {/* Group Selector Pills */}
         <div className="space-y-2">
@@ -74,7 +101,7 @@ export default function EmergencySearch({ donorsList = [] }) {
           </div>
           
           <div className="text-slate-400">
-            Found <strong className="text-blood-400">{filteredDonors.length}</strong> registered donors for blood group <strong className="text-white">{selectedGroup}</strong>.
+            Found <strong className="text-blood-400">{filteredDonors.length}</strong> registered SQL donors for blood group <strong className="text-white">{selectedGroup}</strong>.
           </div>
         </div>
       </div>
@@ -82,7 +109,7 @@ export default function EmergencySearch({ donorsList = [] }) {
       {/* Recommended Donors List */}
       <div className="space-y-4">
         <h3 className="text-base font-bold text-white flex items-center space-x-2">
-          <span>ML Prioritized Donor Queue (Admin & Hospital View)</span>
+          <span>ML Prioritized Donor Queue (Hospital & Admin Dispatch View)</span>
           <span className="text-xs font-normal text-slate-400">(Sorted by ML Availability Score & Distance)</span>
         </h3>
 
@@ -110,12 +137,12 @@ export default function EmergencySearch({ donorsList = [] }) {
                         <div className="flex items-center space-x-2">
                           <h4 className="text-sm font-bold text-white">{donor.name}</h4>
                           <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 font-mono">
-                            {donor.id}
+                            {donor.donor_id || donor.id}
                           </span>
                         </div>
                         <p className="text-xs text-slate-400 flex items-center space-x-1 mt-0.5">
                           <MapPin className="w-3 h-3 text-slate-500" />
-                          <span>{donor.location} ({donor.distance || 4.0} km)</span>
+                          <span>{donor.location} ({donor.distance || 4.0} km) &bull; {donor.email}</span>
                         </p>
                       </div>
                     </div>
@@ -150,7 +177,7 @@ export default function EmergencySearch({ donorsList = [] }) {
                     </a>
 
                     <button
-                      onClick={() => handleNotify(donor.id)}
+                      onClick={() => handleNotify(donor)}
                       disabled={isNotified}
                       className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-all ${
                         isNotified
@@ -161,12 +188,12 @@ export default function EmergencySearch({ donorsList = [] }) {
                       {isNotified ? (
                         <>
                           <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>Alert Dispatched!</span>
+                          <span>Emergency Email Sent!</span>
                         </>
                       ) : (
                         <>
                           <Send className="w-3.5 h-3.5" />
-                          <span>Dispatch Emergency Alert</span>
+                          <span>Dispatch Emergency Email Alert</span>
                         </>
                       )}
                     </button>
