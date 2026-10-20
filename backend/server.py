@@ -174,6 +174,14 @@ def init_sqlite_db():
     add_col_if_missing("donors", "gender", "TEXT DEFAULT 'Male'")
     add_col_if_missing("donors", "last_donation_date", "TEXT")
     add_col_if_missing("donors", "is_available", "INTEGER DEFAULT 1")
+    add_col_if_missing("donors", "dob", "TEXT")
+    add_col_if_missing("donors", "phone", "TEXT")
+    add_col_if_missing("donors", "district", "TEXT")
+    add_col_if_missing("donors", "taluk", "TEXT")
+    add_col_if_missing("donors", "fictional_address", "TEXT")
+    add_col_if_missing("donors", "latitude", "REAL")
+    add_col_if_missing("donors", "longitude", "REAL")
+    add_col_if_missing("donors", "consent", "TEXT")
 
     add_col_if_missing("blood_requests", "hospital_address", "TEXT")
     add_col_if_missing("blood_requests", "contact_phone", "TEXT")
@@ -996,14 +1004,44 @@ def delete_request(request_id: int):
 # 5. INVENTORY & DONORS GENERAL
 # ========================================================
 
+class DonorAlertEmailRequest(BaseModel):
+    donor_email: str
+    donor_name: str
+    blood_group: str
+    hospital_name: Optional[str] = "City General Emergency Trauma Cell"
+    urgency: Optional[str] = "EMERGENCY"
+    patient: Optional[str] = "Critical Emergency Patient"
+
+@app.post("/api/v1/donors/send-email-alert")
+def send_donor_alert(req: DonorAlertEmailRequest):
+    result = send_emergency_alert_email(
+        req.donor_email, req.donor_name, req.blood_group,
+        req.hospital_name, req.urgency, req.patient
+    )
+    return result
+
 @app.get("/api/v1/donors")
-def get_donors(blood_group: Optional[str] = None):
+def get_donors(
+    blood_group: Optional[str] = None,
+    district: Optional[str] = None,
+    taluk: Optional[str] = None
+):
     conn = get_db_connection()
     cursor = conn.cursor()
+    query = "SELECT * FROM donors WHERE 1=1"
+    params = []
     if blood_group:
-        cursor.execute("SELECT * FROM donors WHERE UPPER(blood_group) = UPPER(?) ORDER BY availability_score DESC;", (blood_group,))
-    else:
-        cursor.execute("SELECT * FROM donors ORDER BY id DESC;")
+        query += " AND UPPER(blood_group) = UPPER(?)"
+        params.append(blood_group)
+    if district and district.lower() != 'all':
+        query += " AND (LOWER(district) = LOWER(?) OR LOWER(location) LIKE LOWER(?))"
+        params.extend([district, f"%{district}%"])
+    if taluk and taluk.lower() != 'all':
+        query += " AND (LOWER(taluk) = LOWER(?) OR LOWER(location) LIKE LOWER(?))"
+        params.extend([taluk, f"%{taluk}%"])
+    
+    query += " ORDER BY availability_score DESC, id DESC;"
+    cursor.execute(query, tuple(params))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows

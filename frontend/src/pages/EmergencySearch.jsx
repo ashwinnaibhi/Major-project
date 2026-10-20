@@ -8,12 +8,37 @@ export default function EmergencySearch({ donorsList = [] }) {
   const [notifiedDonors, setNotifiedDonors] = useState([]);
   const [emailStatusMessage, setEmailStatusMessage] = useState('');
 
-  const filteredDonors = donorsList.filter((d) => {
-    const bg = d.blood || d.blood_group;
-    const matchGroup = bg.toUpperCase() === selectedGroup.toUpperCase();
-    const matchLoc = selectedLocation === 'All' || d.location.includes(selectedLocation);
-    return matchGroup && matchLoc;
-  }).sort((a, b) => (b.availabilityScore || 90) - (a.availabilityScore || 90));
+  const availableDistricts = React.useMemo(() => {
+    const set = new Set();
+    donorsList.forEach((d) => {
+      if (d.district) set.add(d.district);
+      else if (d.location && !d.location.startsWith('Zone')) set.add(d.location);
+    });
+    const arr = Array.from(set).sort();
+    return arr.length > 0 ? arr : ['Zone A (Central)', 'Zone B (North)', 'Zone C (South)'];
+  }, [donorsList]);
+
+  const filteredDonors = React.useMemo(() => {
+    return donorsList.filter((d) => {
+      const bg = d.blood || d.blood_group || '';
+      const matchGroup = bg.toUpperCase() === selectedGroup.toUpperCase();
+      if (!matchGroup) return false;
+      if (selectedLocation === 'All') return true;
+      const locLower = (d.location || '').toLowerCase();
+      const distLower = (d.district || '').toLowerCase();
+      const talukLower = (d.taluk || '').toLowerCase();
+      const selLower = selectedLocation.toLowerCase();
+      return distLower === selLower || talukLower === selLower || locLower.includes(selLower);
+    }).sort((a, b) => {
+      const scoreA = Number(a.availabilityScore ?? a.availability_score ?? 90);
+      const scoreB = Number(b.availabilityScore ?? b.availability_score ?? 90);
+      return scoreB - scoreA;
+    });
+  }, [donorsList, selectedGroup, selectedLocation]);
+
+  const displayedDonors = React.useMemo(() => {
+    return filteredDonors.slice(0, 50);
+  }, [filteredDonors]);
 
   const handleNotify = async (donor) => {
     if (!notifiedDonors.includes(donor.id)) {
@@ -83,25 +108,30 @@ export default function EmergencySearch({ donorsList = [] }) {
           </div>
         </div>
 
-        {/* Zone Filter */}
+        {/* Zone/District Filter */}
         <div className="flex flex-wrap items-center gap-4 text-xs">
           <div className="flex items-center space-x-2 bg-slate-900 px-3 py-2 rounded-xl border border-slate-800">
             <MapPin className="w-4 h-4 text-blood-400" />
-            <span className="text-slate-400">Filter Location Zone:</span>
+            <span className="text-slate-400">Filter District/Location:</span>
             <select
               value={selectedLocation}
               onChange={(e) => setSelectedLocation(e.target.value)}
-              className="bg-transparent text-white font-semibold focus:outline-none"
+              className="bg-transparent text-white font-semibold focus:outline-none max-w-xs"
             >
-              <option value="All">All Zones</option>
-              <option value="Zone A">Zone A (Central)</option>
-              <option value="Zone B">Zone B (North)</option>
-              <option value="Zone C">Zone C (South)</option>
+              <option value="All" className="bg-slate-900 text-white">All Districts / Zones</option>
+              {availableDistricts.map((dist) => (
+                <option key={dist} value={dist} className="bg-slate-900 text-white">
+                  {dist}
+                </option>
+              ))}
             </select>
           </div>
           
           <div className="text-slate-400">
             Found <strong className="text-blood-400">{filteredDonors.length}</strong> registered SQL donors for blood group <strong className="text-white">{selectedGroup}</strong>.
+            {filteredDonors.length > 50 && (
+              <span className="text-slate-500 ml-1.5">(Showing top 50 ML-ranked candidates)</span>
+            )}
           </div>
         </div>
       </div>
@@ -110,22 +140,30 @@ export default function EmergencySearch({ donorsList = [] }) {
       <div className="space-y-4">
         <h3 className="text-base font-bold text-white flex items-center space-x-2">
           <span>ML Prioritized Donor Queue (Hospital & Admin Dispatch View)</span>
-          <span className="text-xs font-normal text-slate-400">(Sorted by ML Availability Score & Distance)</span>
+          <span className="text-xs font-normal text-slate-400">(Ranked by ML Availability Score & Eligibility)</span>
         </h3>
 
         {filteredDonors.length === 0 ? (
           <div className="p-8 text-center glass-panel rounded-2xl border border-slate-800">
             <AlertTriangle className="w-8 h-8 text-amber-400 mx-auto mb-2" />
-            <p className="text-sm font-bold text-slate-300">No registered donors found matching {selectedGroup} in this zone.</p>
-            <p className="text-xs text-slate-500 mt-1">Try selecting a different blood group or registering a new donor profile.</p>
+            <p className="text-sm font-bold text-slate-300">No registered donors found matching {selectedGroup} in this location.</p>
+            <p className="text-xs text-slate-500 mt-1">Try selecting a different district or blood group.</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {filteredDonors.map((donor, idx) => {
+            {displayedDonors.map((donor, idx) => {
               const isNotified = notifiedDonors.includes(donor.id);
+              const score = donor.availability_score ?? donor.availabilityScore ?? 91.5;
+              const category = donor.availability_status ?? donor.category ?? 'HIGH';
+              const lastDonText = donor.last_donation_date 
+                ? donor.last_donation_date 
+                : (donor.last_donation_days ? `${donor.last_donation_days}d ago` : '120d ago');
+              const distanceText = donor.distance_km ?? donor.distance ?? 4.0;
+              const phoneText = donor.phone || 'TEST-PHONE';
+
               return (
                 <div
-                  key={donor.id}
+                  key={donor.id || donor.donor_id}
                   className="p-5 rounded-2xl glass-panel border border-slate-800 glass-panel-hover flex flex-col justify-between space-y-4"
                 >
                   <div className="flex items-start justify-between">
@@ -142,38 +180,40 @@ export default function EmergencySearch({ donorsList = [] }) {
                         </div>
                         <p className="text-xs text-slate-400 flex items-center space-x-1 mt-0.5">
                           <MapPin className="w-3 h-3 text-slate-500" />
-                          <span>{donor.location} ({donor.distance || 4.0} km) &bull; {donor.email}</span>
+                          <span>{donor.location} ({distanceText} km) &bull; {donor.email}</span>
                         </p>
                       </div>
                     </div>
 
-                    <MLPredictionBadge category={donor.category || 'HIGH'} score={donor.availabilityScore || 91.5} />
+                    <MLPredictionBadge category={category} score={score} />
                   </div>
 
                   {/* Donor Stats Grid */}
                   <div className="grid grid-cols-3 gap-2 p-3 rounded-xl bg-slate-900/90 border border-slate-800/80 text-[11px]">
                     <div>
                       <span className="text-slate-500 block">Last Donated</span>
-                      <span className="font-semibold text-slate-200">{donor.lastDonated || '180 days ago'}</span>
+                      <span className="font-semibold text-slate-200">{lastDonText}</span>
                     </div>
                     <div>
                       <span className="text-slate-500 block">Frequency</span>
-                      <span className="font-semibold text-slate-200">{donor.freq || '2/year'}</span>
+                      <span className="font-semibold text-slate-200">{donor.donation_frequency ?? donor.freq ?? 2}/yr</span>
                     </div>
                     <div>
-                      <span className="text-slate-500 block">Hist. Response</span>
-                      <span className="font-semibold text-emerald-400">{donor.prevResp || '90%'}</span>
+                      <span className="text-slate-500 block">Response Rate</span>
+                      <span className="font-semibold text-emerald-400">
+                        {donor.previous_response_rate ? `${Math.round(donor.previous_response_rate * 100)}%` : '90%'}
+                      </span>
                     </div>
                   </div>
 
                   {/* Action Buttons */}
                   <div className="flex items-center justify-between pt-2">
                     <a
-                      href={`tel:${donor.phone}`}
+                      href={`tel:${phoneText}`}
                       className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center space-x-1.5 transition-colors"
                     >
                       <Phone className="w-3.5 h-3.5 text-slate-400" />
-                      <span>{donor.phone}</span>
+                      <span>{phoneText}</span>
                     </a>
 
                     <button
