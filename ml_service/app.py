@@ -30,9 +30,12 @@ pipeline = None
 def load_model():
     global pipeline
     if not os.path.exists(MODEL_PATH):
-        print("Model file not found. Training model...")
-        from model.train_models import train_and_evaluate
-        train_and_evaluate()
+        raise RuntimeError(
+            "Required ML model artifact is missing. Automatic training is disabled so the service "
+            "cannot silently regenerate a model from the repository's synthetic dataset. Prepare and "
+            "review a legitimate, reproducible training dataset, then run the training pipeline explicitly."
+        )
+    # joblib deserializes Python objects. Only load a trusted project artifact in a controlled environment.
     pipeline = joblib.load(MODEL_PATH)
     print("ML Pipeline loaded successfully!")
 
@@ -41,7 +44,7 @@ class DonorPredictRequest(BaseModel):
     age: int = Field(28, ge=18, le=65)
     gender: str = Field("Male", example="Male")
     blood_group: str = Field("O+", example="O+")
-    location: str = Field("Zone A (Central)", example="Zone A (Central)")
+    location: str = Field("", example="Sringeri, Chikkamagaluru", description="Free-form location label. The v1 training pipeline ignores location categories not seen in its legacy training set.")
     distance_km: float = Field(5.0, ge=0.0)
     last_donation_days: int = Field(120, ge=0)
     donation_frequency: int = Field(3, ge=0)

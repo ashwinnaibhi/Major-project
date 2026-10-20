@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import StatCard from '../components/StatCard';
 import MLPredictionBadge from '../components/MLPredictionBadge';
+import LocationFields from '../components/LocationFields';
 import { Plus, FileText, CheckCircle2, Clock, MapPin, AlertCircle, Building2 } from 'lucide-react';
 
 export default function HospitalDashboard({ donorsList = [], requestsList = [], onRequestCreated }) {
@@ -12,7 +13,11 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
     blood_group: 'O-',
     units: 2,
     urgency: 'EMERGENCY',
-    patient: 'Emergency Trauma Ward #12'
+    patient: 'Emergency Trauma Ward #12',
+    district: '',
+    taluk: '',
+    latitude: null,
+    longitude: null
   });
   const [formError, setFormError] = useState('');
 
@@ -41,8 +46,20 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
       return;
     }
 
+    if ((newRequest.latitude === null || newRequest.latitude === '') !== (newRequest.longitude === null || newRequest.longitude === '')) {
+      setFormError('Enter both latitude and longitude, or leave both blank.');
+      return;
+    }
+    if (newRequest.latitude !== null && newRequest.latitude !== '' && (Number(newRequest.latitude) < -90 || Number(newRequest.latitude) > 90)) {
+      setFormError('Latitude must be between -90 and 90.');
+      return;
+    }
+    if (newRequest.longitude !== null && newRequest.longitude !== '' && (Number(newRequest.longitude) < -180 || Number(newRequest.longitude) > 180)) {
+      setFormError('Longitude must be between -180 and 180.');
+      return;
+    }
+
     const reqObj = {
-      id: `REQ-${Math.floor(100 + Math.random() * 900)}`,
       hospital_name: newRequest.hospital_name.trim(),
       hospital: newRequest.hospital_name.trim(),
       hospital_address: newRequest.hospital_address.trim(),
@@ -55,14 +72,20 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
       urgency: newRequest.urgency,
       patient_name: newRequest.patient.trim(),
       patient: newRequest.patient.trim(),
+      district: newRequest.district || null,
+      taluk: newRequest.taluk || null,
+      latitude: newRequest.latitude === '' ? null : newRequest.latitude,
+      longitude: newRequest.longitude === '' ? null : newRequest.longitude,
       status: 'PENDING',
       request_date: new Date().toISOString().slice(0, 16).replace('T', ' ')
     };
 
-    if (onRequestCreated) {
-      onRequestCreated(reqObj);
+    try {
+      if (onRequestCreated) await onRequestCreated(reqObj);
+      setShowReqModal(false);
+    } catch (error) {
+      setFormError(error.message || 'The request could not be saved. Please retry.');
     }
-    setShowReqModal(false);
   };
 
   return (
@@ -134,6 +157,7 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
                   <th className="py-2.5 px-3">Req ID</th>
                   <th className="py-2.5 px-3">Hospital Name</th>
                   <th className="py-2.5 px-3">Hospital Address</th>
+                  <th className="py-2.5 px-3">District / Taluk</th>
                   <th className="py-2.5 px-3">Blood Group</th>
                   <th className="py-2.5 px-3">Units</th>
                   <th className="py-2.5 px-3">Urgency</th>
@@ -159,6 +183,10 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
                       </td>
                       <td className="py-2.5 px-3 text-slate-400 max-w-xs truncate" title={req.hospital_address || ''}>
                         {req.hospital_address || 'Address on file'}
+                      </td>
+                      <td className="py-2.5 px-3 text-slate-300">
+                        {[req.taluk, req.district].filter(Boolean).join(', ') || 'Not recorded'}
+                        <span className="mt-1 block text-[10px] text-slate-500">{req.latitude != null && req.longitude != null ? 'Coordinates recorded' : 'Distance unavailable'}</span>
                       </td>
                       <td className="py-2.5 px-3 font-extrabold text-blood-400 text-sm">
                         {req.blood || req.blood_group}
@@ -247,6 +275,14 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
                   placeholder="e.g. 100 Healthcare Blvd, Suite 400, Trauma Wing Desk"
                 />
               </div>
+
+              <LocationFields
+                value={newRequest}
+                onChange={setNewRequest}
+                requiredLocation
+                showCoordinates
+                showLocality={false}
+              />
 
               <div className="grid grid-cols-2 gap-3">
                 <div>

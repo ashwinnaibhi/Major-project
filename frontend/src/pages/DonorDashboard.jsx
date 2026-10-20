@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import StatCard from '../components/StatCard';
 import MLPredictionBadge from '../components/MLPredictionBadge';
+import LocationFields from '../components/LocationFields';
 import { 
   Heart, CalendarCheck, Clock, Award, Bell, ShieldCheck, 
   AlertCircle, PhoneCall, Building2, Send, CheckCircle, LogOut, 
@@ -29,7 +30,11 @@ export default function DonorDashboard({
     blood_group: 'O+',
     age: 25,
     gender: 'Male',
-    location: 'Zone A (Central)',
+    location: '',
+    district: '',
+    taluk: '',
+    latitude: null,
+    longitude: null,
     preferred_time: 'Morning'
   });
 
@@ -54,7 +59,11 @@ export default function DonorDashboard({
     age: currentUser?.age || 28,
     gender: currentUser?.gender || 'Male',
     blood_group: currentUser?.blood_group || currentUser?.blood || 'O+',
-    location: currentUser?.location || 'Zone A (Central)',
+    location: currentUser?.location || '',
+    district: currentUser?.district || '',
+    taluk: currentUser?.taluk || '',
+    latitude: currentUser?.latitude ?? null,
+    longitude: currentUser?.longitude ?? null,
     preferred_time: currentUser?.preferred_time || 'Morning',
     is_available: currentUser?.is_available !== undefined ? currentUser?.is_available : true,
     total_donations: currentUser?.total_donations || 3,
@@ -157,7 +166,7 @@ export default function DonorDashboard({
 
     try {
       if (currentUser?.token) {
-        await fetch('http://localhost:8080/api/v1/donors/me/profile', {
+        const response = await fetch('http://localhost:8080/api/v1/donors/me/profile', {
           method: 'PUT',
           headers: { 
             'Content-Type': 'application/json',
@@ -165,14 +174,15 @@ export default function DonorDashboard({
           },
           body: JSON.stringify(profileForm)
         });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || 'Profile update failed.');
       }
       setDonorDetails(prev => ({ ...prev, ...profileForm }));
       setIsEditingProfile(false);
       setProfileMsg('Profile updated successfully!');
       setTimeout(() => setProfileMsg(''), 4000);
     } catch (e) {
-      setProfileMsg('Saved locally.');
-      setIsEditingProfile(false);
+      setProfileMsg(e.message || 'Could not save profile changes.');
     }
   };
 
@@ -291,7 +301,11 @@ export default function DonorDashboard({
         phone: formData.phone,
         blood: formData.blood_group,
         blood_group: formData.blood_group,
-        location: formData.location,
+        location: formData.location.trim() || [formData.taluk, formData.district].filter(Boolean).join(', '),
+        district: formData.district,
+        taluk: formData.taluk,
+        latitude: formData.latitude,
+        longitude: formData.longitude,
         preferred_time: formData.preferred_time,
         age: formData.age,
         gender: formData.gender,
@@ -501,32 +515,19 @@ export default function DonorDashboard({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="text-slate-300 font-semibold mb-1 block">Location Zone</label>
-                  <select
-                    value={formData.location}
-                    onChange={(e) => setFormData({ ...formData, location: e.target.value })}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-none"
-                  >
-                    <option value="Zone A (Central)">Zone A (Central)</option>
-                    <option value="Zone B (North)">Zone B (North)</option>
-                    <option value="Zone C (South)">Zone C (South)</option>
-                  </select>
-                </div>
+              <LocationFields value={formData} onChange={setFormData} requiredLocation showCoordinates />
 
-                <div>
-                  <label className="text-slate-300 font-semibold mb-1 block">Preferred Donation Time</label>
-                  <select
-                    value={formData.preferred_time}
-                    onChange={(e) => setFormData({ ...formData, preferred_time: e.target.value })}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-none"
-                  >
-                    <option value="Morning">Morning (8 AM - 12 PM)</option>
-                    <option value="Afternoon">Afternoon (12 PM - 4 PM)</option>
-                    <option value="Evening">Evening (4 PM - 8 PM)</option>
-                  </select>
-                </div>
+              <div>
+                <label className="text-slate-300 font-semibold mb-1 block">Preferred Donation Time</label>
+                <select
+                  value={formData.preferred_time}
+                  onChange={(e) => setFormData({ ...formData, preferred_time: e.target.value })}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-none"
+                >
+                  <option value="Morning">Morning (8 AM - 12 PM)</option>
+                  <option value="Afternoon">Afternoon (12 PM - 4 PM)</option>
+                  <option value="Evening">Evening (4 PM - 8 PM)</option>
+                </select>
               </div>
 
               <button
@@ -825,8 +826,17 @@ export default function DonorDashboard({
                 <span className="text-white font-bold text-sm">{donorDetails.age} years &bull; {donorDetails.gender || 'Male'}</span>
               </div>
               <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 space-y-1">
-                <span className="text-slate-500 font-semibold block">Location Zone</span>
-                <span className="text-white font-bold text-sm">{donorDetails.location}</span>
+                <span className="text-slate-500 font-semibold block">District & Taluk</span>
+                <span className="text-white font-bold text-sm">
+                  {donorDetails.district && donorDetails.taluk
+                    ? `${donorDetails.taluk}, ${donorDetails.district}`
+                    : donorDetails.location
+                      ? `Legacy location — not mapped: ${donorDetails.location}`
+                      : 'Location not recorded'}
+                </span>
+                {!(donorDetails.district && donorDetails.taluk) && (
+                  <span className="block pt-1 text-[11px] text-amber-300">Edit your profile to select a district and taluk. Legacy labels are never converted automatically.</span>
+                )}
               </div>
               <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 space-y-1 md:col-span-2">
                 <span className="text-slate-500 font-semibold block">Preferred Donation Time</span>
@@ -893,31 +903,19 @@ export default function DonorDashboard({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="text-slate-300 font-semibold mb-1 block">Location Zone</label>
-                  <select
-                    value={profileForm.location}
-                    onChange={(e) => setProfileForm({ ...profileForm, location: e.target.value })}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
-                  >
-                    <option value="Zone A (Central)">Zone A (Central)</option>
-                    <option value="Zone B (North)">Zone B (North)</option>
-                    <option value="Zone C (South)">Zone C (South)</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="text-slate-300 font-semibold mb-1 block">Preferred Donation Time</label>
-                  <select
-                    value={profileForm.preferred_time}
-                    onChange={(e) => setProfileForm({ ...profileForm, preferred_time: e.target.value })}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
-                  >
-                    <option value="Morning">Morning (8 AM - 12 PM)</option>
-                    <option value="Afternoon">Afternoon (12 PM - 4 PM)</option>
-                    <option value="Evening">Evening (4 PM - 8 PM)</option>
-                  </select>
-                </div>
+              <LocationFields value={profileForm} onChange={setProfileForm} showCoordinates />
+
+              <div>
+                <label className="text-slate-300 font-semibold mb-1 block">Preferred Donation Time</label>
+                <select
+                  value={profileForm.preferred_time || 'Morning'}
+                  onChange={(e) => setProfileForm({ ...profileForm, preferred_time: e.target.value })}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
+                >
+                  <option value="Morning">Morning (8 AM - 12 PM)</option>
+                  <option value="Afternoon">Afternoon (12 PM - 4 PM)</option>
+                  <option value="Evening">Evening (4 PM - 8 PM)</option>
+                </select>
               </div>
 
               <button

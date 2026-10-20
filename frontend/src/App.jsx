@@ -110,29 +110,29 @@ export default function App() {
 
   // Hospital Request Creation with Immediate DB Sync
   const handleRequestCreated = async (newReq) => {
-    try {
-      const res = await fetch('http://localhost:8080/api/v1/requests', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          hospital_name: newReq.hospital_name || newReq.hospital,
-          hospital_address: newReq.hospital_address,
-          contact_phone: newReq.contact_phone || '',
-          blood_group: newReq.blood_group || newReq.blood,
-          units_needed: parseInt(newReq.units_needed || newReq.units),
-          urgency_level: newReq.urgency_level || newReq.urgency,
-          patient_name: newReq.patient_name || newReq.patient
-        })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setRequestsList(prev => [data, ...prev]);
-      } else {
-        setRequestsList(prev => [newReq, ...prev]);
-      }
-    } catch (e) {
-      setRequestsList(prev => [newReq, ...prev]);
+    const res = await fetch('http://localhost:8080/api/v1/requests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        hospital_name: newReq.hospital_name || newReq.hospital,
+        hospital_address: newReq.hospital_address,
+        contact_phone: newReq.contact_phone || '',
+        blood_group: newReq.blood_group || newReq.blood,
+        units_needed: parseInt(newReq.units_needed || newReq.units, 10),
+        urgency_level: newReq.urgency_level || newReq.urgency,
+        patient_name: newReq.patient_name || newReq.patient,
+        district: newReq.district || null,
+        taluk: newReq.taluk || null,
+        latitude: newReq.latitude === '' || newReq.latitude === undefined ? null : newReq.latitude,
+        longitude: newReq.longitude === '' || newReq.longitude === undefined ? null : newReq.longitude
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || 'The blood request could not be saved.');
     }
+    setRequestsList(prev => [data, ...prev]);
+    return data;
   };
 
   // Request Status Change with Immediate DB Sync
@@ -201,7 +201,7 @@ export default function App() {
         );
 
       case 'emergency':
-        return <EmergencySearch donorsList={donorsList} />;
+        return <EmergencySearch />;
       case 'ml_predictor':
         return <MLPredictorView />;
       case 'inventory':

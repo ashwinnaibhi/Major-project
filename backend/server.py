@@ -18,7 +18,8 @@ from pydantic import BaseModel, Field
 # Load environment variables
 load_dotenv()
 
-DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bloodbank.db")
+DB_FILE = os.getenv("BLOODBANK_DB_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "bloodbank.db"))
+LOCATION_CATALOG_FILE = os.getenv("LOCATION_CATALOG_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "location_catalog.json"))
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 JWT_SECRET = os.getenv("JWT_SECRET", "haemopulse_secret_key_2026_jwt")
 JWT_ALGORITHM = "HS256"
@@ -186,6 +187,14 @@ def init_sqlite_db():
     add_col_if_missing("blood_requests", "hospital_address", "TEXT")
     add_col_if_missing("blood_requests", "contact_phone", "TEXT")
     add_col_if_missing("blood_requests", "created_by_user_id", "INTEGER")
+    add_col_if_missing("blood_requests", "district", "TEXT")
+    add_col_if_missing("blood_requests", "taluk", "TEXT")
+    add_col_if_missing("blood_requests", "latitude", "REAL")
+    add_col_if_missing("blood_requests", "longitude", "REAL")
+
+    # Indexes keep combined location + blood group/availability filtering efficient.
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_donors_location_blood_availability ON donors (district, taluk, blood_group, is_available)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_requests_location ON blood_requests (district, taluk)")
 
     add_col_if_missing("appointments", "donor_id", "TEXT")
     add_col_if_missing("appointments", "donor_email", "TEXT")
@@ -193,19 +202,8 @@ def init_sqlite_db():
     add_col_if_missing("appointments", "created_at", "TEXT")
     conn.commit()
 
-    # Seed Initial SQL Data if empty
-    cursor.execute("SELECT COUNT(*) FROM donors;")
-    if cursor.fetchone()[0] == 0:
-        cursor.executemany("""
-        INSERT INTO donors (donor_id, name, email, blood_group, age, gender, location, distance_km, last_donation_days, last_donation_date, total_donations, donation_frequency, previous_response_rate, preferred_time, health_score, availability_status, availability_score, is_available)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1);
-        """, [
-            ('DNR-1001', 'John Doe', 'john.doe@email.com', 'O+', 29, 'Male', 'Zone A (Central)', 3.5, 150, '2026-03-15', 4, 3, 0.95, 'Morning', 98, 'HIGH', 94.5),
-            ('DNR-1002', 'Sarah Jenkins', 'sarah.j@email.com', 'A-', 34, 'Female', 'Zone B (North)', 6.2, 125, '2026-04-10', 6, 4, 0.88, 'Afternoon', 95, 'HIGH', 89.0),
-            ('DNR-1003', 'Michael Brown', 'mbrown@email.com', 'B+', 42, 'Male', 'Zone A (Central)', 8.0, 24, '2026-07-20', 2, 1, 0.40, 'Evening', 85, 'LOW', 35.0),
-            ('DNR-1004', 'Emily Davis', 'emily.d@email.com', 'AB+', 25, 'Female', 'Zone C (South)', 12.5, 215, '2026-01-12', 3, 2, 0.75, 'Morning', 92, 'MEDIUM', 68.5)
-        ])
-        conn.commit()
+    # Do not create synthetic donor identities or infer locations on an empty database.
+    # Existing donor records are preserved; production/test data must be explicitly loaded.
 
     cursor.execute("SELECT COUNT(*) FROM users;")
     if cursor.fetchone()[0] == 0:
@@ -424,6 +422,105 @@ def send_emergency_alert_email(to_email: str, recipient_name: str, blood_group: 
 
     return {"sent": email_sent, "to": to_email}
 
+# --- LOCATION CATALOG, VALIDATION & DISTANCE HELPERS ---
+EARTH_RADIUS_KM = 6371.0088
+
+
+def validate_coordinate_pair(latitude, longitude, label="Location"):
+    """Validate optional WGS84 coordinates without inventing missing values."""
+    if (latitude is None) != (longitude is None):
+        raise HTTPException(status_code=400, detail=f"{label} latitude and longitude must be provided together.")
+    if latitude is None:
+        return
+    if not (-90 <= float(latitude) <= 90):
+        raise HTTPException(status_code=400, detail=f"{label} latitude must be between -90 and 90.")
+    if not (-180 <= float(longitude) <= 180):
+        raise HTTPException(status_code=400, detail=f"{label} longitude must be between -180 and 180.")
+
+
+def valid_stored_coordinates(latitude, longitude):
+    """Return whether existing stored coordinates form a valid pair."""
+    if latitude is None or longitude is None:
+        return False
+    try:
+        latitude = float(latitude)
+        longitude = float(longitude)
+    except (TypeError, ValueError):
+        return False
+    return -90 <= latitude <= 90 and -180 <= longitude <= 180
+
+
+def haversine_km(latitude_a, longitude_a, latitude_b, longitude_b):
+    """Compute great-circle distance in kilometres between two WGS84 points."""
+    import math
+
+    values = (latitude_a, longitude_a, latitude_b, longitude_b)
+    if any(value is None for value in values):
+        return None
+    lat_a, lon_a, lat_b, lon_b = (math.radians(float(value)) for value in values)
+    delta_lat = lat_b - lat_a
+    delta_lon = lon_b - lon_a
+    hav = math.sin(delta_lat / 2) ** 2 + math.cos(lat_a) * math.cos(lat_b) * math.sin(delta_lon / 2) ** 2
+    return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(min(1.0, max(0.0, hav))))
+
+
+def get_location_catalog(cursor=None):
+    """Load the shared, explicitly configured Karnataka location catalog.
+
+    Values from the donor table are deliberately NOT merged into this catalog:
+    a legacy or mistyped database value must not silently become a valid option
+    or bypass district/taluk validation. Existing legacy rows remain untouched.
+    The optional cursor argument is retained for call-site compatibility.
+    """
+    del cursor  # The catalog is configuration, not an inferred database lookup.
+    catalog = {}
+    try:
+        with open(LOCATION_CATALOG_FILE, "r", encoding="utf-8") as catalog_file:
+            raw_catalog = json.load(catalog_file)
+        for item in raw_catalog.get("districts", []):
+            name = str(item.get("name", "")).strip()
+            if not name:
+                continue
+            catalog.setdefault(name, set()).update(
+                str(taluk_name).strip()
+                for taluk_name in item.get("taluks", [])
+                if str(taluk_name).strip()
+            )
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="Configured location catalog is missing.")
+    except (json.JSONDecodeError, TypeError, AttributeError) as exc:
+        raise HTTPException(status_code=500, detail=f"Invalid location catalog configuration: {exc}")
+
+    normalized = {}
+    # Deduplicate case-insensitively but preserve the configured/display spelling.
+    seen_districts = set()
+    for district_name in sorted(catalog, key=str.casefold):
+        display_district = district_name.strip()
+        key = display_district.casefold()
+        if display_district and key not in seen_districts:
+            seen_districts.add(key)
+            normalized[display_district] = sorted(catalog[district_name], key=str.casefold)
+    return normalized
+
+
+def normalize_location_pair(district, taluk, cursor):
+    district = (district or "").strip() or None
+    taluk = (taluk or "").strip() or None
+    if not district and not taluk:
+        return None, None
+    if not district or not taluk:
+        raise HTTPException(status_code=400, detail="Select both a district and its taluk, or leave both blank for a legacy location.")
+
+    catalog = get_location_catalog(cursor)
+    matching_district = next((name for name in catalog if name.casefold() == district.casefold()), None)
+    if matching_district is None:
+        raise HTTPException(status_code=400, detail=f"Unknown district '{district}'. Check the configured location catalog.")
+    matching_taluk = next((name for name in catalog[matching_district] if name.casefold() == taluk.casefold()), None)
+    if matching_taluk is None:
+        raise HTTPException(status_code=400, detail=f"Taluk '{taluk}' is not configured under district '{matching_district}'.")
+    return matching_district, matching_taluk
+
+
 # --- PYDANTIC SCHEMAS ---
 class RegisterDonorRequest(BaseModel):
     name: str
@@ -434,6 +531,10 @@ class RegisterDonorRequest(BaseModel):
     age: int
     gender: Optional[str] = "Male"
     location: str
+    district: Optional[str] = None
+    taluk: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     preferred_time: Optional[str] = "Morning"
     role: Optional[str] = "ROLE_DONOR"
 
@@ -448,6 +549,10 @@ class UpdateDonorProfileRequest(BaseModel):
     gender: Optional[str] = None
     blood_group: Optional[str] = None
     location: Optional[str] = None
+    district: Optional[str] = None
+    taluk: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     preferred_time: Optional[str] = None
 
 class AvailabilityToggleRequest(BaseModel):
@@ -470,6 +575,10 @@ class RequestCreateRequest(BaseModel):
     units_needed: int
     urgency_level: str
     patient_name: str
+    district: Optional[str] = None
+    taluk: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     created_by_user_id: Optional[int] = None
 
 class InventoryCreateRequest(BaseModel):
@@ -514,6 +623,15 @@ def register_donor(req: RegisterDonorRequest):
         conn.close()
         raise HTTPException(status_code=400, detail="An account with this email address already exists. Please log in.")
 
+    # Validate new location fields when supplied; legacy clients may omit them.
+    try:
+        district, taluk = normalize_location_pair(req.district, req.taluk, cursor)
+        validate_coordinate_pair(req.latitude, req.longitude, "Donor")
+    except HTTPException:
+        conn.close()
+        raise
+    location = (req.location or "").strip() or ", ".join(value for value in (taluk, district) if value) or "Location not specified"
+
     # Generate 32-byte secure token for 24-hour verification
     raw_token = secrets.token_urlsafe(32)
     expiry = (datetime.utcnow() + timedelta(hours=24)).isoformat()
@@ -531,9 +649,9 @@ def register_donor(req: RegisterDonorRequest):
 
     # Insert donor profile
     cursor.execute("""
-    INSERT INTO donors (donor_id, user_id, name, email, blood_group, age, gender, location, distance_km, last_donation_days, total_donations, donation_frequency, previous_response_rate, preferred_time, health_score, availability_status, availability_score, is_available)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 4.0, 180, 0, 2, 0.90, ?, 95, 'HIGH', 91.5, 1);
-    """, (donor_id, user_id, req.name, req_email, req.blood_group, req.age, req.gender or "Male", req.location, req.preferred_time or "Morning"))
+    INSERT INTO donors (donor_id, user_id, name, email, blood_group, age, gender, location, district, taluk, latitude, longitude, distance_km, last_donation_days, total_donations, donation_frequency, previous_response_rate, preferred_time, health_score, availability_status, availability_score, is_available)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 4.0, 180, 0, 2, 0.90, ?, 95, 'HIGH', 91.5, 1);
+    """, (donor_id, user_id, req.name, req_email, req.blood_group, req.age, req.gender or "Male", location, district, taluk, req.latitude, req.longitude, req.preferred_time or "Morning"))
 
     conn.commit()
 
@@ -840,6 +958,20 @@ def update_donor_profile(req: UpdateDonorProfileRequest, user_payload: Optional[
         vals.append(user_payload["id"])
         cursor.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?;", tuple(vals))
 
+    # Validate location edits before writing, and close the connection on validation errors.
+    try:
+        if req.district is not None or req.taluk is not None:
+            district, taluk = normalize_location_pair(req.district, req.taluk, cursor)
+        else:
+            district = taluk = None
+        fields_set = getattr(req, "model_fields_set", getattr(req, "__fields_set__", set()))
+        coordinates_supplied = "latitude" in fields_set or "longitude" in fields_set
+        if coordinates_supplied:
+            validate_coordinate_pair(req.latitude, req.longitude, "Donor")
+    except HTTPException:
+        conn.close()
+        raise
+
     # Update Donors table
     d_updates = []
     d_vals = []
@@ -855,9 +987,15 @@ def update_donor_profile(req: UpdateDonorProfileRequest, user_payload: Optional[
     if req.blood_group:
         d_updates.append("blood_group = ?")
         d_vals.append(req.blood_group)
-    if req.location:
+    if req.location is not None:
         d_updates.append("location = ?")
-        d_vals.append(req.location)
+        d_vals.append(req.location.strip() or (", ".join(value for value in (taluk, district) if value) if district and taluk else req.location))
+    if req.district is not None or req.taluk is not None:
+        d_updates.extend(["district = ?", "taluk = ?"])
+        d_vals.extend([district, taluk])
+    if coordinates_supplied:
+        d_updates.extend(["latitude = ?", "longitude = ?"])
+        d_vals.extend([req.latitude, req.longitude])
     if req.preferred_time:
         d_updates.append("preferred_time = ?")
         d_vals.append(req.preferred_time)
@@ -944,12 +1082,18 @@ def create_hospital_request(req: RequestCreateRequest):
 
     conn = get_db_connection()
     cursor = conn.cursor()
+    try:
+        district, taluk = normalize_location_pair(req.district, req.taluk, cursor)
+        validate_coordinate_pair(req.latitude, req.longitude, "Blood request")
+    except HTTPException:
+        conn.close()
+        raise
     req_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     cursor.execute("""
-    INSERT INTO blood_requests (hospital_name, hospital_address, contact_phone, blood_group, units_needed, urgency_level, patient_name, status, request_date, created_by_user_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?);
-    """, (req.hospital_name.strip(), req.hospital_address.strip(), req.contact_phone.strip(), req.blood_group, req.units_needed, req.urgency_level, req.patient_name.strip(), req_date, req.created_by_user_id))
+    INSERT INTO blood_requests (hospital_name, hospital_address, contact_phone, blood_group, units_needed, urgency_level, patient_name, status, request_date, created_by_user_id, district, taluk, latitude, longitude)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?);
+    """, (req.hospital_name.strip(), req.hospital_address.strip(), (req.contact_phone or "").strip(), req.blood_group, req.units_needed, req.urgency_level, req.patient_name.strip(), req_date, req.created_by_user_id, district, taluk, req.latitude, req.longitude))
 
     conn.commit()
     new_id = cursor.lastrowid
@@ -973,7 +1117,11 @@ def create_hospital_request(req: RequestCreateRequest):
         "urgency_level": req.urgency_level,
         "patient_name": req.patient_name,
         "status": "PENDING",
-        "request_date": req_date
+        "request_date": req_date,
+        "district": district,
+        "taluk": taluk,
+        "latitude": req.latitude,
+        "longitude": req.longitude
     }
 
 @app.put("/api/v1/requests/{request_id}/status")
@@ -1020,30 +1168,132 @@ def send_donor_alert(req: DonorAlertEmailRequest):
     )
     return result
 
+@app.get("/api/v1/locations")
+def get_locations():
+    """Return a shared district/taluk catalog for dependent selectors."""
+    catalog = get_location_catalog()
+    return {
+        "state": "Karnataka",
+        "source": "backend/location_catalog.json",
+        "authoritative": False,
+        "notice": (
+            "This application catalog is a bounded project selection list, not a complete official directory. "
+            "Confirm current district/taluk membership with Karnataka Government and the Ministry of Panchayati Raj LGD directory before operational use. "
+            "Legacy records without a verified district/taluk pair are not auto-mapped."
+        ),
+        "reference_sources": [
+            {"name": "Karnataka District Portal", "url": "https://karnataka.s3waas.gov.in/"},
+            {"name": "Local Government Directory (LGD), Ministry of Panchayati Raj", "url": "https://lgdirectory.gov.in/"},
+            {"name": "Ministry of Panchayati Raj — LGD overview", "url": "https://panchayat.gov.in/en/lgd/"},
+        ],
+        "districts": list(catalog.keys()),
+        "taluks_by_district": catalog,
+    }
+
+
 @app.get("/api/v1/donors")
 def get_donors(
     blood_group: Optional[str] = None,
     district: Optional[str] = None,
-    taluk: Optional[str] = None
+    taluk: Optional[str] = None,
+    available_only: bool = False,
+    request_id: Optional[int] = Query(None, ge=1),
+    radius_km: Optional[float] = Query(None, gt=0, le=5000),
+    sort_by: str = "availability",
 ):
+    """List donors with server-enforced filters and optional request-origin distance.
+
+    Legacy callers can omit all parameters and retain availability-score ordering.
+    `distance_from_request_km` is null unless the selected saved request and donor
+    both contain valid coordinate pairs. `distance_km` remains the historical stored
+    field for backward compatibility and must not be used as request distance.
+    """
+    clean_sort = (sort_by or "availability").strip().lower()
+    if clean_sort not in {"availability", "distance"}:
+        raise HTTPException(status_code=400, detail="sort_by must be 'availability' or 'distance'.")
+    if taluk and not district:
+        # Preserve API flexibility for older callers, but the UI always sends both.
+        clean_taluk = taluk.strip()
+    else:
+        clean_taluk = (taluk or "").strip()
+
     conn = get_db_connection()
     cursor = conn.cursor()
+    request_origin = None
+    if request_id is not None:
+        cursor.execute("SELECT id, latitude, longitude FROM blood_requests WHERE id = ?;", (request_id,))
+        request_row = cursor.fetchone()
+        if not request_row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Blood request not found.")
+        if valid_stored_coordinates(request_row["latitude"], request_row["longitude"]):
+            request_origin = (float(request_row["latitude"]), float(request_row["longitude"]))
+        elif radius_km is not None:
+            conn.close()
+            raise HTTPException(status_code=400, detail="Radius filtering requires valid latitude and longitude on the selected blood request.")
+        elif clean_sort == "distance":
+            conn.close()
+            raise HTTPException(status_code=400, detail="Nearest-first sorting requires valid latitude and longitude on the selected blood request.")
+    elif radius_km is not None:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Select a blood request with coordinates before using a radius filter.")
+    elif clean_sort == "distance":
+        conn.close()
+        raise HTTPException(status_code=400, detail="Nearest-first sorting requires a selected blood request with valid coordinates.")
+
     query = "SELECT * FROM donors WHERE 1=1"
     params = []
     if blood_group:
-        query += " AND UPPER(blood_group) = UPPER(?)"
+        query += " AND UPPER(TRIM(blood_group)) = UPPER(TRIM(?))"
         params.append(blood_group)
-    if district and district.lower() != 'all':
-        query += " AND (LOWER(district) = LOWER(?) OR LOWER(location) LIKE LOWER(?))"
-        params.extend([district, f"%{district}%"])
-    if taluk and taluk.lower() != 'all':
-        query += " AND (LOWER(taluk) = LOWER(?) OR LOWER(location) LIKE LOWER(?))"
-        params.extend([taluk, f"%{taluk}%"])
-    
+    if district and district.strip().lower() != "all":
+        query += " AND LOWER(TRIM(COALESCE(district, ''))) = LOWER(TRIM(?))"
+        params.append(district)
+    if clean_taluk and clean_taluk.lower() != "all":
+        query += " AND LOWER(TRIM(COALESCE(taluk, ''))) = LOWER(TRIM(?))"
+        params.append(clean_taluk)
+    if available_only:
+        query += " AND COALESCE(is_available, 0) = 1"
+
     query += " ORDER BY availability_score DESC, id DESC;"
     cursor.execute(query, tuple(params))
-    rows = [dict(r) for r in cursor.fetchall()]
+    rows = [dict(row) for row in cursor.fetchall()]
     conn.close()
+
+    for donor in rows:
+        donor_distance = None
+        if request_origin and valid_stored_coordinates(donor.get("latitude"), donor.get("longitude")):
+            donor_distance = haversine_km(
+                request_origin[0], request_origin[1],
+                float(donor["latitude"]), float(donor["longitude"]),
+            )
+        donor["_distance_raw_km"] = donor_distance
+        donor["distance_from_request_km"] = round(donor_distance, 1) if donor_distance is not None else None
+
+    if radius_km is not None:
+        # Radius uses full precision; display rounding must not change membership.
+        rows = [row for row in rows if row["_distance_raw_km"] is not None and row["_distance_raw_km"] <= radius_km]
+
+    if clean_sort == "distance":
+        rows.sort(key=lambda row: (
+            row["_distance_raw_km"] is None,
+            row["_distance_raw_km"] if row["_distance_raw_km"] is not None else float("inf"),
+            -float(row.get("availability_score") or 0),
+        ))
+    else:
+        rows.sort(key=lambda row: (-float(row.get("availability_score") or 0), -int(row.get("id") or 0)))
+    for donor in rows:
+        donor.pop("_distance_raw_km", None)
+        # Keep legacy database values untouched, but do not present artificial zone
+        # labels as real Karnataka locations. They remain explicitly unmapped.
+        if not donor.get("district") or not donor.get("taluk"):
+            legacy_location = str(donor.get("location") or "").strip()
+            if legacy_location.casefold().startswith("zone "):
+                donor["location"] = "Legacy location — not mapped"
+        # Precise donor coordinates are needed only for server-side distance math;
+        # they are not required by the search UI and must not be returned to clients.
+        donor.pop("latitude", None)
+        donor.pop("longitude", None)
     return rows
 
 @app.delete("/api/v1/donors/{donor_id}")

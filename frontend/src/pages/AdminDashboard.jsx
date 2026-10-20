@@ -162,8 +162,16 @@ export default function AdminDashboard({ onNavigate, donorsList = [], onDeleteDo
                     </span>
                   </td>
                   <td className="py-2.5 px-3 text-slate-400">
-                    <div>{donor.location}</div>
-                    <div className="font-mono text-slate-300 text-[10px]">{donor.phone}</div>
+                    <div className="font-semibold text-slate-200">
+                      {[donor.taluk, donor.district].filter(Boolean).join(', ') || donor.location || 'Location not recorded'}
+                    </div>
+                    {donor.location && (donor.district || donor.taluk) && (
+                      <div className="mt-0.5 max-w-xs truncate text-[10px] text-slate-500" title={donor.location}>{donor.location}</div>
+                    )}
+                    <div className="mt-1 font-mono text-[10px] text-slate-300">{donor.phone || 'Phone not recorded'}</div>
+                    {donor.latitude != null && donor.longitude != null && (
+                      <div className="mt-0.5 text-[10px] text-emerald-400">Coordinates available</div>
+                    )}
                   </td>
                   <td className="py-2.5 px-3 text-slate-300 font-medium">
                     <span className="flex items-center space-x-1">

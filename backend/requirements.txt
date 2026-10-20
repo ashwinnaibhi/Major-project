@@ -1,0 +1,8 @@
+# Runtime dependencies for the active Python FastAPI backend.
+fastapi>=0.100.0
+uvicorn>=0.22.0
+python-dotenv>=1.0.0
+PyJWT>=2.8.0
+pydantic>=2.0.0
+# FastAPI TestClient dependency used by backend/tests.
+httpx>=0.24.0

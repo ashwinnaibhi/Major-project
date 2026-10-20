@@ -1,5 +1,8 @@
 import React, { useState } from 'react';
 import { LogIn, UserPlus, X, Droplet, ShieldCheck, Heart, Sparkles } from 'lucide-react';
+import LocationFields from './LocationFields';
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
 
 export default function AuthModal({ isOpen, onClose, onAuthSuccess }) {
   const [authMode, setAuthMode] = useState('register'); // 'login' or 'register'
@@ -17,7 +20,11 @@ export default function AuthModal({ isOpen, onClose, onAuthSuccess }) {
     blood_group: 'O+',
     age: 25,
     gender: 'Male',
-    location: 'Zone A (Central)',
+    location: '',
+    district: '',
+    taluk: '',
+    latitude: null,
+    longitude: null,
     preferred_time: 'Morning'
   });
 
@@ -31,42 +38,40 @@ export default function AuthModal({ isOpen, onClose, onAuthSuccess }) {
     setLoading(true);
     setMsg(null);
 
-    // Call Backend API
     try {
-      const response = await fetch('http://localhost:8080/api/v1/auth/register', {
+      const response = await fetch(`${API_BASE_URL}/api/v1/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...regData, role: 'ROLE_DONOR' })
       });
-      const data = await response.json();
-      
-      setLoading(false);
-      setMsg({ type: 'success', text: 'Registration Successful! Welcome to HaemoPulse.' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || data.message || 'Registration failed. Check the form and backend response.');
+      }
 
+      setMsg({ type: 'success', text: data.message || 'Registration successful.' });
       setTimeout(() => {
         onAuthSuccess({
           name: regData.name,
           email: regData.email,
           blood_group: regData.blood_group,
           role: 'DONOR',
-          donor_id: data.donor_id || 'DNR-NEW-101'
+          donor_id: data.user?.donor_id || data.donor?.donor_id,
+          token: data.token,
+          isLoggedIn: true,
+          is_verified: data.user?.is_verified ?? false,
+          district: data.donor?.district ?? regData.district,
+          taluk: data.donor?.taluk ?? regData.taluk
         });
         onClose();
-      }, 1000);
+      }, 800);
     } catch (err) {
-      // Client-side fallback if backend API is in transition
+      setMsg({
+        type: 'error',
+        text: err.message || 'Registration could not reach the backend. No donor record was confirmed as saved.'
+      });
+    } finally {
       setLoading(false);
-      setMsg({ type: 'success', text: 'Donor Profile Registered & Saved!' });
-      setTimeout(() => {
-        onAuthSuccess({
-          name: regData.name,
-          email: regData.email,
-          blood_group: regData.blood_group,
-          role: 'DONOR',
-          donor_id: `DNR-${Math.floor(1000 + Math.random() * 9000)}`
-        });
-        onClose();
-      }, 1000);
     }
   };
 
@@ -88,7 +93,7 @@ export default function AuthModal({ isOpen, onClose, onAuthSuccess }) {
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
-      <div className="w-full max-w-lg glass-panel border border-slate-800 rounded-3xl p-6 relative space-y-5 shadow-2xl">
+      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto glass-panel border border-slate-800 rounded-3xl p-6 relative space-y-5 shadow-2xl">
         
         {/* Close Button */}
         <button
@@ -229,34 +234,19 @@ export default function AuthModal({ isOpen, onClose, onAuthSuccess }) {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="text-slate-400 block mb-1 font-semibold">Location Zone *</label>
-                <select
-                  value={regData.location}
-                  onChange={(e) => setRegData({ ...regData, location: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white focus:border-blood-500 focus:outline-none"
-                >
-                  <option value="Zone A (Central)">Zone A (Central)</option>
-                  <option value="Zone B (North)">Zone B (North)</option>
-                  <option value="Zone C (South)">Zone C (South)</option>
-                  <option value="Zone D (East)">Zone D (East)</option>
-                  <option value="Zone E (West)">Zone E (West)</option>
-                </select>
-              </div>
+            <LocationFields value={regData} onChange={setRegData} requiredLocation showCoordinates />
 
-              <div>
-                <label className="text-slate-400 block mb-1 font-semibold">Preferred Time Slot *</label>
-                <select
-                  value={regData.preferred_time}
-                  onChange={(e) => setRegData({ ...regData, preferred_time: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white focus:border-blood-500 focus:outline-none"
-                >
-                  <option value="Morning">Morning (8 AM - 12 PM)</option>
-                  <option value="Afternoon">Afternoon (12 PM - 4 PM)</option>
-                  <option value="Evening">Evening (4 PM - 8 PM)</option>
-                </select>
-              </div>
+            <div>
+              <label className="text-slate-400 block mb-1 font-semibold">Preferred Time Slot *</label>
+              <select
+                value={regData.preferred_time}
+                onChange={(e) => setRegData({ ...regData, preferred_time: e.target.value })}
+                className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white focus:border-blood-500 focus:outline-none"
+              >
+                <option value="Morning">Morning (8 AM - 12 PM)</option>
+                <option value="Afternoon">Afternoon (12 PM - 4 PM)</option>
+                <option value="Evening">Evening (4 PM - 8 PM)</option>
+              </select>
             </div>
 
             <button
