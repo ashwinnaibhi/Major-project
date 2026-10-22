@@ -1,0 +1,338 @@
+{
+  "districts": [
+    "Bagalkote",
+    "Ballari",
+    "Belagavi",
+    "Bengaluru Rural",
+    "Bengaluru South",
+    "Bengaluru Urban",
+    "Bidar",
+    "Chamarajanagar",
+    "Chikkaballapura",
+    "Chikkamagaluru",
+    "Chitradurga",
+    "Dakshina Kannada",
+    "Davanagere",
+    "Dharwad",
+    "Gadag",
+    "Hassan",
+    "Haveri",
+    "Kalaburagi",
+    "Kodagu",
+    "Kolar",
+    "Koppal",
+    "Mandya",
+    "Mysuru",
+    "Raichur",
+    "Shivamogga",
+    "Tumakuru",
+    "Udupi",
+    "Uttara Kannada",
+    "Vijayanagara",
+    "Vijayapura",
+    "Yadgir"
+  ],
+  "taluks_by_district": {
+    "Bagalkote": [
+      "Badami",
+      "Bagalkote",
+      "Bilagi",
+      "Hungund",
+      "Ilkal",
+      "Jamkhandi",
+      "Mudhol",
+      "Rabkavi Banhatti",
+      "Terdal"
+    ],
+    "Ballari": [
+      "Ballari",
+      "Kampli",
+      "Kurugodu",
+      "Sandur",
+      "Siruguppa"
+    ],
+    "Belagavi": [
+      "Athani",
+      "Bailhongal",
+      "Belagavi",
+      "Chikkodi",
+      "Gokak",
+      "Hukkeri",
+      "Kagawad",
+      "Khanapur",
+      "Kittur",
+      "Mudalgi",
+      "Nippani",
+      "Ramdurg",
+      "Raybag",
+      "Savadatti",
+      "Yaragatti"
+    ],
+    "Bengaluru Rural": [
+      "Devanahalli",
+      "Doddaballapura",
+      "Hoskote",
+      "Nelamangala"
+    ],
+    "Bengaluru South": [
+      "Channapatna",
+      "Harohalli",
+      "Kanakapura",
+      "Magadi",
+      "Ramanagara"
+    ],
+    "Bengaluru Urban": [
+      "Anekal",
+      "Bengaluru East",
+      "Bengaluru North",
+      "Bengaluru South",
+      "Yelahanka"
+    ],
+    "Bidar": [
+      "Aurad",
+      "Basavakalyan",
+      "Bhalki",
+      "Bidar",
+      "Chitgoppa",
+      "Hulsur",
+      "Humnabad",
+      "Kamalnagar"
+    ],
+    "Chamarajanagar": [
+      "Chamarajanagar",
+      "Gundlupete",
+      "Hanur",
+      "Kollegal",
+      "Yelandur"
+    ],
+    "Chikkaballapura": [
+      "Bagepalli",
+      "Chelur",
+      "Chikkaballapura",
+      "Chintamani",
+      "Gauribidanur",
+      "Gudibanda",
+      "Manchenahalli",
+      "Sidlaghatta"
+    ],
+    "Chikkamagaluru": [
+      "Ajjampura",
+      "Chikkamagaluru",
+      "Kadur",
+      "Kalasa",
+      "Koppa",
+      "Mudigere",
+      "Narasimharajapura",
+      "Sringeri",
+      "Tarikere"
+    ],
+    "Chitradurga": [
+      "Challakere",
+      "Chitradurga",
+      "Hiriyur",
+      "Holalkere",
+      "Hosadurga",
+      "Molakalmuru"
+    ],
+    "Dakshina Kannada": [
+      "Bantwal",
+      "Belthangady",
+      "Kadaba",
+      "Mangaluru",
+      "Moodbidri",
+      "Mulki",
+      "Puttur",
+      "Sullia",
+      "Ullal"
+    ],
+    "Davanagere": [
+      "Channagiri",
+      "Davanagere",
+      "Harihara",
+      "Honnali",
+      "Jagaluru",
+      "Nyamathi"
+    ],
+    "Dharwad": [
+      "Alnavar",
+      "Annigeri",
+      "Dharwad",
+      "Hubballi Rural",
+      "Hubballi Urban",
+      "Kalghatgi",
+      "Kundgol",
+      "Navalgund"
+    ],
+    "Gadag": [
+      "Gadag",
+      "Gajendragad",
+      "Lakshmeshwar",
+      "Mundargi",
+      "Naragund",
+      "Ron",
+      "Shirahatti"
+    ],
+    "Hassan": [
+      "Alur",
+      "Arakalgud",
+      "Arasikere",
+      "Belur",
+      "Channarayapatna",
+      "Hassan",
+      "Holenarasipura",
+      "Sakleshpur"
+    ],
+    "Haveri": [
+      "Byadgi",
+      "Hangal",
+      "Haveri",
+      "Hirekerur",
+      "Ranebennur",
+      "Rattihalli",
+      "Savanur",
+      "Shiggaon"
+    ],
+    "Kalaburagi": [
+      "Afzalpur",
+      "Aland",
+      "Chincholi",
+      "Chitapur",
+      "Jevargi",
+      "Kalaburagi",
+      "Kalgi",
+      "Kamalapur",
+      "Sedam",
+      "Shahabad",
+      "Yedrami"
+    ],
+    "Kodagu": [
+      "Kushalnagar",
+      "Madikeri",
+      "Ponnampet",
+      "Somwarpet",
+      "Virajpet"
+    ],
+    "Kolar": [
+      "Bangarapet",
+      "Kolar",
+      "Kolar Gold Fields",
+      "Malur",
+      "Mulbagal",
+      "Srinivaspur"
+    ],
+    "Koppal": [
+      "Gangavathi",
+      "Kanakagiri",
+      "Karatagi",
+      "Koppal",
+      "Kukanur",
+      "Kushtagi",
+      "Yelburga"
+    ],
+    "Mandya": [
+      "Krishnarajpet",
+      "Maddur",
+      "Malavalli",
+      "Mandya",
+      "Nagamangala",
+      "Pandavapura",
+      "Srirangapatna"
+    ],
+    "Mysuru": [
+      "Heggadadevankote",
+      "Hunsur",
+      "Krishnarajanagara",
+      "Mysuru",
+      "Nanjangud",
+      "Periyapatna",
+      "Saligrama",
+      "Saragur",
+      "T Narasipura"
+    ],
+    "Raichur": [
+      "Devadurga",
+      "Lingasugur",
+      "Manvi",
+      "Maski",
+      "Mudgal",
+      "Raichur",
+      "Sindhanur",
+      "Sirwar"
+    ],
+    "Shivamogga": [
+      "Bhadravathi",
+      "Hosanagara",
+      "Sagara",
+      "Shikaripura",
+      "Shivamogga",
+      "Soraba",
+      "Thirthahalli"
+    ],
+    "Tumakuru": [
+      "Chikkanayakanahalli",
+      "Gubbi",
+      "Koratagere",
+      "Kunigal",
+      "Madhugiri",
+      "Pavagada",
+      "Sira",
+      "Tiptur",
+      "Tumakuru",
+      "Turuvekere"
+    ],
+    "Udupi": [
+      "Brahmavara",
+      "Byndoor",
+      "Hebri",
+      "Kapu",
+      "Karkala",
+      "Kundapura",
+      "Udupi"
+    ],
+    "Uttara Kannada": [
+      "Ankola",
+      "Bhatkal",
+      "Dandeli",
+      "Haliyal",
+      "Honnavar",
+      "Joida",
+      "Karwar",
+      "Kumta",
+      "Mundgod",
+      "Siddapur",
+      "Sirsi",
+      "Yellapur"
+    ],
+    "Vijayanagara": [
+      "Hagaribommanahalli",
+      "Harapanahalli",
+      "Hoovina Hadagali",
+      "Hosapete",
+      "Kotturu",
+      "Kudligi"
+    ],
+    "Vijayapura": [
+      "Alamela",
+      "Babaleshwar",
+      "Basavana Bagewadi",
+      "Chadchan",
+      "Devara Hipparagi",
+      "Indi",
+      "Kolhar",
+      "Muddebihal",
+      "Nidagundi",
+      "Sindagi",
+      "Talikoti",
+      "Tikota",
+      "Vijayapura"
+    ],
+    "Yadgir": [
+      "Gurmitkal",
+      "Hunsagi",
+      "Shahapur",
+      "Shorapur",
+      "Vadagera",
+      "Yadgir"
+    ]
+  }
+}

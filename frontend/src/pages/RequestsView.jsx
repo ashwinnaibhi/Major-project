@@ -4,47 +4,51 @@ import { FileText, Plus, CheckCircle, XCircle, Clock, ShieldAlert, Trash2 } from
 export default function RequestsView({ requestsList = [], onRequestCreated, onRequestStatusChange, onRequestDeleted }) {
   const [showModal, setShowModal] = useState(false);
   const [newReq, setNewReq] = useState({
-    hospital: 'City General Hospital',
-    blood: 'O+',
-    units: 2,
-    urgency: 'HIGH',
-    patient: 'ICU Patient #101'
+    hospital: '', hospital_address: '', contact_phone: '', blood: 'O+', units: 2,
+    urgency: 'HIGH', patient: ''
   });
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [noticeIsError, setNoticeIsError] = useState(false);
 
-  const handleCreate = (e) => {
+  const handleCreate = async (e) => {
     e.preventDefault();
-    const reqObj = {
-      id: `REQ-${Math.floor(100 + Math.random() * 900)}`,
-      hospital_name: newReq.hospital,
-      hospital: newReq.hospital,
-      blood_group: newReq.blood,
-      blood: newReq.blood,
-      units_needed: parseInt(newReq.units),
-      units: parseInt(newReq.units),
-      urgency_level: newReq.urgency,
-      urgency: newReq.urgency,
-      patient_name: newReq.patient,
-      patient: newReq.patient,
-      status: 'PENDING',
-      request_date: new Date().toISOString().slice(0, 16).replace('T', ' ')
-    };
-
-    if (onRequestCreated) {
-      onRequestCreated(reqObj);
-    }
-    setShowModal(false);
+    if (busy) return;
+    setBusy(true); setNotice(''); setNoticeIsError(false);
+    try {
+      if (typeof onRequestCreated !== 'function') throw new Error('Request service is unavailable.');
+      const saved = await onRequestCreated({
+        hospital_name: newReq.hospital.trim(), hospital_address: newReq.hospital_address.trim(),
+        contact_phone: newReq.contact_phone.trim(), blood_group: newReq.blood,
+        units_needed: Number.parseInt(newReq.units, 10), urgency_level: newReq.urgency,
+        patient_name: newReq.patient.trim(), destination_latitude: null, destination_longitude: null
+      });
+      if (!saved || saved.id == null) throw new Error('The server did not confirm that the request was saved.');
+      setNotice(`Request #${saved.id} was saved to the database.`);
+      setShowModal(false);
+      setNewReq({ hospital: '', hospital_address: '', contact_phone: '', blood: 'O+', units: 2, urgency: 'HIGH', patient: '' });
+    } catch (error) {
+      setNotice(error.message || 'The request could not be saved.'); setNoticeIsError(true);
+    } finally { setBusy(false); }
   };
 
-  const handleUpdateStatus = (id, newStatus) => {
-    if (onRequestStatusChange) {
-      onRequestStatusChange(id, newStatus);
-    }
+  const handleUpdateStatus = async (id, newStatus) => {
+    setNotice(''); setNoticeIsError(false);
+    try {
+      if (typeof onRequestStatusChange !== 'function') throw new Error('Request status service is unavailable.');
+      await onRequestStatusChange(id, newStatus);
+      setNotice(`Request #${id} was updated to ${newStatus}.`);
+    } catch (error) { setNotice(error.message || 'Request status update failed.'); setNoticeIsError(true); }
   };
 
-  const handleDeleteRequest = (id) => {
-    if (onRequestDeleted) {
-      onRequestDeleted(id);
-    }
+  const handleDeleteRequest = async (id) => {
+    if (!window.confirm(`Delete request #${id}? This cannot be undone.`)) return;
+    setNotice(''); setNoticeIsError(false);
+    try {
+      if (typeof onRequestDeleted !== 'function') throw new Error('Request deletion service is unavailable.');
+      await onRequestDeleted(id);
+      setNotice(`Request #${id} was deleted.`);
+    } catch (error) { setNotice(error.message || 'Request deletion failed.'); setNoticeIsError(true); }
   };
 
   return (
@@ -68,6 +72,8 @@ export default function RequestsView({ requestsList = [], onRequestCreated, onRe
           <span>New Hospital Requisition</span>
         </button>
       </div>
+
+      {notice && <div role="status" className={`rounded-xl border p-3 text-xs ${noticeIsError ? 'border-rose-800 bg-rose-950/60 text-rose-200' : 'border-emerald-800 bg-emerald-950/50 text-emerald-200'}`}>{notice}</div>}
 
       <div className="p-5 rounded-2xl glass-panel border border-slate-800">
         <div className="overflow-x-auto">
@@ -151,9 +157,9 @@ export default function RequestsView({ requestsList = [], onRequestCreated, onRe
 
       {/* Modal for New Requisition */}
       {showModal && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md p-6 rounded-2xl glass-panel border border-slate-800 space-y-4">
-            <h3 className="text-lg font-extrabold text-white">Create Hospital Blood Request</h3>
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-start justify-center overflow-y-auto p-4" role="dialog" aria-modal="true" aria-labelledby="request-modal-title">
+          <div className="my-auto w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain p-6 rounded-2xl glass-panel border border-slate-800 space-y-4">
+            <h3 id="request-modal-title" className="text-lg font-extrabold text-white">Create Hospital Blood Request</h3>
             <form onSubmit={handleCreate} className="space-y-3 text-xs">
               <div>
                 <label className="text-slate-400 block mb-1 font-semibold">Hospital Name</label>
@@ -166,6 +172,14 @@ export default function RequestsView({ requestsList = [], onRequestCreated, onRe
                 />
               </div>
 
+              <div>
+                <label className="text-slate-400 block mb-1 font-semibold">Hospital Address *</label>
+                <input type="text" value={newReq.hospital_address} onChange={(e) => setNewReq({ ...newReq, hospital_address: e.target.value })} className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white" required />
+              </div>
+              <div>
+                <label className="text-slate-400 block mb-1 font-semibold">Contact Phone (optional)</label>
+                <input type="tel" value={newReq.contact_phone} onChange={(e) => setNewReq({ ...newReq, contact_phone: e.target.value })} className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white" />
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-slate-400 block mb-1 font-semibold">Blood Group</label>
@@ -218,16 +232,18 @@ export default function RequestsView({ requestsList = [], onRequestCreated, onRe
               <div className="flex items-center justify-end space-x-2 pt-3">
                 <button
                   type="button"
-                  onClick={() => setShowModal(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 font-semibold"
+                  onClick={() => { if (!busy && window.confirm('Close this form and discard unsaved changes?')) setShowModal(false); }}
+                  disabled={busy}
+                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 font-semibold disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-xl bg-blood-600 hover:bg-blood-500 text-white font-bold"
+                  disabled={busy}
+                  className="px-4 py-2 rounded-xl bg-blood-600 hover:bg-blood-500 text-white font-bold disabled:opacity-50"
                 >
-                  Submit Request
+                  {busy ? 'Saving…' : 'Submit Request'}
                 </button>
               </div>
             </form>

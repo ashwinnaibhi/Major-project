@@ -12,12 +12,15 @@ app = FastAPI(
     version="1.0.0"
 )
 
+_cors_origins = [origin.strip() for origin in os.getenv(
+    "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+).split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -30,11 +33,15 @@ pipeline = None
 def load_model():
     global pipeline
     if not os.path.exists(MODEL_PATH):
-        print("Model file not found. Training model...")
-        from model.train_models import train_and_evaluate
-        train_and_evaluate()
-    pipeline = joblib.load(MODEL_PATH)
-    print("ML Pipeline loaded successfully!")
+        pipeline = None
+        print(f"ML model artifact not found at {MODEL_PATH}. Inference disabled; no automatic training was started.")
+        return
+    try:
+        pipeline = joblib.load(MODEL_PATH)
+        print("ML Pipeline loaded successfully!")
+    except Exception as exc:
+        pipeline = None
+        print(f"ML model artifact could not be loaded ({type(exc).__name__}). Inference is disabled.")
 
 class DonorPredictRequest(BaseModel):
     donor_id: str = Field("DNR-1001", example="DNR-1001")
@@ -122,8 +129,9 @@ def predict_availability(request: DonorPredictRequest):
             recommendation=rec,
             model_used="Random Forest Classifier (v1.0)"
         )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Prediction error: {str(e)}")
+    except Exception as exc:
+        print(f"ML prediction error ({type(exc).__name__}): {exc}")
+        raise HTTPException(status_code=400, detail="The model could not process this scenario. Check the service logs and input compatibility.")
 
 if __name__ == '__main__':
     import uvicorn
