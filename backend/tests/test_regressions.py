@@ -6,6 +6,9 @@ import sqlite3
 import sys
 import tempfile
 from pathlib import Path
+from datetime import datetime, timezone
+
+import pytest
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 TEST_DB_PATH = str(Path(tempfile.gettempdir()) / f"haemopulse-regression-{os.getpid()}.sqlite3")
@@ -224,7 +227,10 @@ def test_inventory_add_is_persisted_and_idempotent():
 
 def test_emergency_alert_requires_role_and_persists_without_sending_real_email():
     donor_row_id = add_donor("DNR-ALERT", "alert-donor@haemopulse.invalid", score=88, lat=12, lon=77, consent="OPTED_IN")
+    linked_user_id, _ = create_user("alert-donor@haemopulse.invalid", "ROLE_DONOR", verified=1)
     conn = connect()
+    conn.execute("UPDATE donors SET user_id = ? WHERE id = ?", (linked_user_id, donor_row_id))
+    conn.commit()
     try:
         cursor = conn.execute("""INSERT INTO blood_requests
           (hospital_name,hospital_address,contact_phone,blood_group,units_needed,urgency_level,patient_name,status,request_date,created_by_user_id,destination_latitude,destination_longitude)
@@ -239,13 +245,14 @@ def test_emergency_alert_requires_role_and_persists_without_sending_real_email()
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["accepted"] is True and body["persisted"] is True
-    assert body["delivery_status"] == "DISABLED" and body["delivered"] is False
+    assert body["delivery_status"] == "PENDING" and body["delivered"] is False and body["queued"] is True
     duplicate = client.post("/api/v1/donors/send-email-alert", json=payload, headers={"Authorization": f"Bearer {ADMIN_TOKEN}"})
     assert duplicate.status_code == 200 and duplicate.json()["duplicate"] is True
     conn = connect()
     try:
         rows = conn.execute("SELECT id FROM emergency_alerts WHERE idempotency_key = ?", (payload["idempotency_key"],)).fetchall()
-        assert len(rows) == 1
+        outbox = conn.execute("SELECT id, status FROM notification_outbox WHERE event_key = ?", (f"manual-alert:{payload['idempotency_key']}",)).fetchall()
+        assert len(rows) == 1 and len(outbox) == 1 and outbox[0]["status"] == "PENDING"
     finally:
         conn.close()
 
@@ -506,5 +513,458 @@ def test_donor_with_nonmatching_blood_group_cannot_respond():
             (request_id,),
         ).fetchone()[0]
         assert count == 0
+    finally:
+        conn.close()
+
+
+
+def _linked_donor(donor_id: str, email: str, *, verified: int = 1, status: str = "ACTIVE", consent: str = "OPTED_IN", blood_group: str = "O+"):
+    donor_row_id = add_donor(donor_id, email, consent=consent, blood_group=blood_group)
+    user_id, token = create_user(email, "ROLE_DONOR", verified=verified)
+    conn = connect()
+    try:
+        conn.execute("UPDATE users SET status = ? WHERE id = ?", (status, user_id))
+        conn.execute("UPDATE donors SET user_id = ? WHERE id = ?", (user_id, donor_row_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return donor_row_id, user_id, token
+
+
+def _insert_request(*, urgency="EMERGENCY", hospital_user_id=None, assigned_admin_user_id=None, creator_id=None):
+    conn = connect()
+    try:
+        cursor = conn.execute("""
+            INSERT INTO blood_requests
+            (hospital_name,hospital_address,contact_phone,blood_group,units_needed,urgency_level,patient_name,status,request_date,created_by_user_id,hospital_user_id,assigned_admin_user_id)
+            VALUES ('Explicit Test Hospital','10 Example Road','+911234567890','O+',2,?,'Private Patient Reference','PENDING',datetime('now'),?,?,?)
+        """, (urgency, creator_id or HOSPITAL_ID, hospital_user_id, assigned_admin_user_id))
+        conn.commit()
+        return cursor.lastrowid
+    finally:
+        conn.close()
+
+
+def _clear_outbox():
+    conn = connect()
+    try:
+        conn.execute("DELETE FROM notification_provider_events")
+        conn.execute("DELETE FROM notification_outbox")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_emergency_request_creation_enqueues_only_eligible_linked_verified_opted_in_donors():
+    _clear_outbox()
+    _, good_user_id, _ = _linked_donor("DNR-EMAIL-GOOD", "outbox-good@haemopulse.invalid", blood_group="AB-")
+    _, unverified_user_id, _ = _linked_donor("DNR-EMAIL-UNVERIFIED", "outbox-unverified@haemopulse.invalid", verified=0, blood_group="AB-")
+    _, inactive_user_id, _ = _linked_donor("DNR-EMAIL-INACTIVE", "outbox-inactive@haemopulse.invalid", status="SUSPENDED", blood_group="AB-")
+    _linked_donor("DNR-EMAIL-CONSENT", "outbox-consent@haemopulse.invalid", consent="PENDING", blood_group="AB-")
+    add_donor("DNR-EMAIL-UNLINKED", "outbox-unlinked@haemopulse.invalid", consent="OPTED_IN", blood_group="AB-")
+
+    payload = {
+        "hospital_name": "Explicit Test Hospital", "hospital_address": "10 Example Road", "contact_phone": "+911234567890",
+        "blood_group": "AB-", "units_needed": 2, "urgency_level": "EMERGENCY", "patient_name": "Sensitive patient data",
+        "destination_latitude": None, "destination_longitude": None,
+    }
+    response = client.post("/api/v1/requests", json=payload, headers={"Authorization": f"Bearer {HOSPITAL_TOKEN}"})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["notification_summary"]["eligible_donors"] == 1
+    assert body["notification_summary"]["status"] == "QUEUED"
+    assert body["hospital_user_id"] == HOSPITAL_ID
+    conn = connect()
+    try:
+        events = conn.execute("SELECT * FROM notification_outbox WHERE request_id = ?", (body["id"],)).fetchall()
+        assert len(events) == 1
+        assert events[0]["recipient_user_id"] == good_user_id
+        assert events[0]["recipient_email"] == "outbox-good@haemopulse.invalid"
+        assert events[0]["status"] == "PENDING"
+        assert "Sensitive patient data" not in str(dict(events[0]))
+    finally:
+        conn.close()
+
+
+def test_non_emergency_request_does_not_enqueue_automatic_donor_fanout():
+    _clear_outbox()
+    _linked_donor("DNR-NORMAL-NOTIFY", "normal-notify@haemopulse.invalid")
+    payload = {"hospital_name": "Regular Hospital", "hospital_address": "10 Example Road", "blood_group": "O+",
+               "units_needed": 1, "urgency_level": "HIGH", "patient_name": "Ward reference"}
+    response = client.post("/api/v1/requests", json=payload, headers={"Authorization": f"Bearer {HOSPITAL_TOKEN}"})
+    assert response.status_code == 200, response.text
+    assert response.json()["notification_summary"]["status"] == "NOT_APPLICABLE"
+    conn = connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM notification_outbox WHERE request_id=?", (response.json()["id"],)).fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_admin_emergency_request_requires_explicit_active_hospital_assignment():
+    payload = {"hospital_name": "Admin Test Hospital", "hospital_address": "10 Example Road", "blood_group": "O+",
+               "units_needed": 1, "urgency_level": "EMERGENCY", "patient_name": "Ward reference"}
+    headers = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+    missing = client.post("/api/v1/requests", json=payload, headers=headers)
+    assert missing.status_code == 422
+    invalid = client.post("/api/v1/requests", json={**payload, "hospital_user_id": ADMIN_ID}, headers=headers)
+    assert invalid.status_code == 422
+    valid = client.post("/api/v1/requests", json={**payload, "hospital_user_id": HOSPITAL_ID, "assigned_admin_user_id": ADMIN_ID}, headers=headers)
+    assert valid.status_code == 200, valid.text
+    assert valid.json()["hospital_user_id"] == HOSPITAL_ID
+    assert valid.json()["assigned_admin_user_id"] == ADMIN_ID
+
+
+def test_acceptance_routes_only_to_explicit_hospital_and_assigned_admin_and_rejection_is_silent():
+    _clear_outbox()
+    donor_row_id, donor_user_id, donor_token = _linked_donor("DNR-ROUTED-ACCEPT", "routed-accept@haemopulse.invalid")
+    other_hospital_id, _ = create_user("unrelated-hospital@haemopulse.invalid", "ROLE_HOSPITAL")
+    other_admin_id, _ = create_user("unrelated-admin@haemopulse.invalid", "ROLE_ADMIN")
+    request_id = _insert_request(hospital_user_id=HOSPITAL_ID, assigned_admin_user_id=ADMIN_ID)
+    response = client.post(f"/api/v1/requests/{request_id}/response", json={"action": "ACCEPT"},
+                           headers={"Authorization": f"Bearer {donor_token}"})
+    assert response.status_code == 200, response.text
+    assert response.json()["response"] == "ACCEPTED"
+    conn = connect()
+    try:
+        rows = conn.execute("SELECT event_type,recipient_user_id,status FROM notification_outbox WHERE request_id=?", (request_id,)).fetchall()
+        mapping = {row["event_type"]: (row["recipient_user_id"], row["status"]) for row in rows}
+        assert mapping["DONOR_ACCEPTANCE_HOSPITAL"] == (HOSPITAL_ID, "PENDING")
+        assert mapping["DONOR_ACCEPTANCE_ADMIN"] == (ADMIN_ID, "PENDING")
+        assert all(row["recipient_user_id"] not in {other_hospital_id, other_admin_id} for row in rows)
+        assert conn.execute("SELECT response FROM emergency_request_responses WHERE request_id=?", (request_id,)).fetchone()[0] == "ACCEPTED"
+    finally:
+        conn.close()
+
+    # A different donor rejecting a request must not generate any notification events.
+    _clear_outbox()
+    _, _, reject_token = _linked_donor("DNR-ROUTED-REJECT", "routed-reject@haemopulse.invalid")
+    rejected_request_id = _insert_request(hospital_user_id=HOSPITAL_ID, assigned_admin_user_id=ADMIN_ID)
+    rejected = client.post(f"/api/v1/requests/{rejected_request_id}/response", json={"action": "REJECT"},
+                           headers={"Authorization": f"Bearer {reject_token}"})
+    assert rejected.status_code == 200 and rejected.json()["response"] == "REJECTED"
+    conn = connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM notification_outbox WHERE request_id=?", (rejected_request_id,)).fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_acceptance_remains_persisted_when_recipient_assignments_are_missing():
+    _clear_outbox()
+    _, _, donor_token = _linked_donor("DNR-MISSING-ASSIGN", "missing-assignment@haemopulse.invalid")
+    request_id = _insert_request(hospital_user_id=None, assigned_admin_user_id=None)
+    response = client.post(f"/api/v1/requests/{request_id}/response", json={"action": "ACCEPT"},
+                           headers={"Authorization": f"Bearer {donor_token}"})
+    assert response.status_code == 200, response.text
+    assert response.json()["notifications_queued"] == 0
+    assert response.json()["notifications_needing_review"] == 2
+    conn = connect()
+    try:
+        assert conn.execute("SELECT response FROM emergency_request_responses WHERE request_id=?", (request_id,)).fetchone()[0] == "ACCEPTED"
+        statuses = [r[0] for r in conn.execute("SELECT status FROM notification_outbox WHERE request_id=?", (request_id,)).fetchall()]
+        assert statuses == ["NEEDS_REVIEW", "NEEDS_REVIEW"]
+        assert all(r[0] is None for r in conn.execute("SELECT recipient_email FROM notification_outbox WHERE request_id=?", (request_id,)).fetchall())
+    finally:
+        conn.close()
+
+
+def test_request_and_acceptance_outbox_events_roll_back_atomically(monkeypatch):
+    _clear_outbox()
+    payload = {"hospital_name": "Atomic Hospital", "hospital_address": "10 Example Road", "blood_group": "O+",
+               "units_needed": 1, "urgency_level": "EMERGENCY", "patient_name": "Ward reference"}
+    before = None
+    conn = connect()
+    try:
+        before = conn.execute("SELECT COUNT(*) FROM blood_requests").fetchone()[0]
+    finally:
+        conn.close()
+    def fail_fanout(*args, **kwargs):
+        raise sqlite3.IntegrityError("simulated outbox failure")
+    monkeypatch.setattr(server, "_enqueue_emergency_request_notifications", fail_fanout)
+    response = client.post("/api/v1/requests", json=payload, headers={"Authorization": f"Bearer {HOSPITAL_TOKEN}"})
+    assert response.status_code == 409
+    conn = connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM blood_requests").fetchone()[0] == before
+        assert conn.execute("SELECT COUNT(*) FROM notification_outbox").fetchone()[0] == 0
+    finally:
+        conn.close()
+    monkeypatch.undo()
+
+    _clear_outbox()
+    _, _, donor_token = _linked_donor("DNR-ATOMIC-ACCEPT", "atomic-accept@haemopulse.invalid")
+    request_id = _insert_request(hospital_user_id=HOSPITAL_ID, assigned_admin_user_id=ADMIN_ID)
+    monkeypatch.setattr(server, "_enqueue_acceptance_notifications", fail_fanout)
+    response = client.post(f"/api/v1/requests/{request_id}/response", json={"action": "ACCEPT"},
+                           headers={"Authorization": f"Bearer {donor_token}"})
+    assert response.status_code == 409
+    conn = connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM emergency_request_responses WHERE request_id=?", (request_id,)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM notification_outbox WHERE request_id=?", (request_id,)).fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_worker_submission_and_retry_limit_are_persistent_and_bounded(monkeypatch):
+    _clear_outbox()
+    _, donor_user_id, _ = _linked_donor("DNR-WORKER-RETRY", "worker-retry@haemopulse.invalid")
+    request_id = _insert_request(hospital_user_id=HOSPITAL_ID, assigned_admin_user_id=ADMIN_ID)
+    conn = connect()
+    try:
+        conn.execute("""INSERT INTO notification_outbox(event_key,event_type,request_id,donor_id,recipient_user_id,recipient_email,status,attempt_count,next_retry_at,created_at,updated_at)
+            VALUES ('worker-retry-event','DONOR_EMERGENCY_REQUEST',?,?,?,?,'PENDING',5,datetime('now'),'2026-10-23T00:00:00+00:00','2026-10-23T00:00:00+00:00')""",
+            (request_id, "DNR-WORKER-RETRY", donor_user_id, "worker-retry@haemopulse.invalid"))
+        conn.commit()
+        event_id = conn.execute("SELECT id FROM notification_outbox WHERE event_key='worker-retry-event'").fetchone()[0]
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(server, "EXTERNAL_MESSAGES_ENABLED", True)
+    called = []
+    def fake_sender(**kwargs):
+        called.append(kwargs)
+        return server.SubmissionResult("RETRY", error_code="HTTP_429", http_status=429)
+    assert server.process_notification_batch(sender=fake_sender, limit=1) == 1
+    assert len(called) == 1
+    conn = connect()
+    try:
+        row = conn.execute("SELECT status,attempt_count,last_error_code,claimed_by,provider_message_id FROM notification_outbox WHERE id=?", (event_id,)).fetchone()
+        assert row["status"] == "FAILED" and row["attempt_count"] == server.NOTIFICATION_MAX_ATTEMPTS
+        assert row["last_error_code"] == "HTTP_429" and row["claimed_by"] is None and row["provider_message_id"] is None
+    finally:
+        conn.close()
+    retried = client.post(f"/api/v1/notifications/{event_id}/retry", headers={"Authorization": f"Bearer {ADMIN_TOKEN}"})
+    assert retried.status_code == 200, retried.text
+    conn = connect()
+    try:
+        row = conn.execute("SELECT status,attempt_count FROM notification_outbox WHERE id=?", (event_id,)).fetchone()
+        assert row["status"] == "PENDING" and row["attempt_count"] == 0
+    finally:
+        conn.close()
+    monkeypatch.setattr(server, "EXTERNAL_MESSAGES_ENABLED", False)
+
+
+def test_expired_worker_lease_requires_review_not_a_blind_duplicate_send():
+    _clear_outbox()
+    conn = connect()
+    try:
+        conn.execute("""INSERT INTO notification_outbox(event_key,event_type,status,claimed_by,claimed_at,claim_expires_at,created_at,updated_at)
+            VALUES ('stale-lease-test','DONOR_EMERGENCY_REQUEST','PROCESSING','dead-worker','2026-10-23T00:00:00+00:00','2026-10-23T00:00:01+00:00','2026-10-23T00:00:00+00:00','2026-10-23T00:00:00+00:00')""")
+        conn.commit()
+    finally:
+        conn.close()
+    claimed = server._claim_next_notification()
+    assert claimed is None
+    conn = connect()
+    try:
+        row = conn.execute("SELECT status,last_error_code,claimed_by FROM notification_outbox WHERE event_key='stale-lease-test'").fetchone()
+        assert row["status"] == "NEEDS_REVIEW"
+        assert row["last_error_code"] == "STALE_CLAIM_REQUIRES_RECONCILIATION"
+        assert row["claimed_by"] is None
+    finally:
+        conn.close()
+
+
+def test_brevo_webhook_auth_deduplication_and_out_of_order_events(monkeypatch):
+    _clear_outbox()
+    monkeypatch.setenv("BREVO_WEBHOOK_BEARER_TOKEN", "test-webhook-bearer-token")
+    conn = connect()
+    try:
+        conn.execute("""INSERT INTO notification_outbox(event_key,event_type,status,provider_message_id,last_provider_event_at,created_at,updated_at)
+            VALUES ('webhook-msg','DONOR_EMERGENCY_REQUEST','SUBMITTED','<brevo-test-message>','2026-10-23T10:00:00+00:00','2026-10-23T09:00:00+00:00','2026-10-23T10:00:00+00:00')""")
+        conn.commit()
+    finally:
+        conn.close()
+    headers = {"Authorization": "Bearer test-webhook-bearer-token"}
+    recent_epoch = int(datetime(2026, 10, 23, 10, 30, tzinfo=timezone.utc).timestamp())
+    delivered = {"event": "delivered", "message-id": "<brevo-test-message>", "ts_event": recent_epoch, "id": 101}
+    unauthorized = client.post("/api/v1/webhooks/brevo/transactional", json=delivered)
+    assert unauthorized.status_code == 401
+    first = client.post("/api/v1/webhooks/brevo/transactional", json=delivered, headers=headers)
+    assert first.status_code == 200 and first.json()["matched"] is True
+    duplicate = client.post("/api/v1/webhooks/brevo/transactional", json=delivered, headers=headers)
+    assert duplicate.status_code == 200 and duplicate.json()["duplicate"] is True
+    older_epoch = int(datetime(2026, 10, 23, 9, 30, tzinfo=timezone.utc).timestamp())
+    older = client.post("/api/v1/webhooks/brevo/transactional", json={"event": "sent", "message-id": "<brevo-test-message>", "ts_event": older_epoch, "id": 102}, headers=headers)
+    assert older.status_code == 200
+    # Even a later-arriving bounce or timestamp-less event must not downgrade DELIVERED.
+    newer_bounce_epoch = int(datetime(2026, 10, 23, 11, 30, tzinfo=timezone.utc).timestamp())
+    newer_bounce = client.post("/api/v1/webhooks/brevo/transactional", json={"event": "hardBounce", "message-id": "<brevo-test-message>", "ts_event": newer_bounce_epoch, "id": 103}, headers=headers)
+    assert newer_bounce.status_code == 200
+    no_timestamp = client.post("/api/v1/webhooks/brevo/transactional", json={"event": "sent", "message-id": "<brevo-test-message>", "id": 104}, headers=headers)
+    assert no_timestamp.status_code == 200
+    conn = connect()
+    try:
+        row = conn.execute("SELECT status,delivered_at FROM notification_outbox WHERE event_key='webhook-msg'").fetchone()
+        events_count = conn.execute("SELECT COUNT(*) FROM notification_provider_events WHERE provider_message_id='<brevo-test-message>'").fetchone()[0]
+        assert row["status"] == "DELIVERED" and row["delivered_at"] is not None
+        assert events_count == 4  # Duplicate was idempotent; distinct out-of-order events were recorded without status regression.
+    finally:
+        conn.close()
+
+
+def test_notification_status_and_retry_are_role_scoped():
+    _clear_outbox()
+    request_id = _insert_request(hospital_user_id=HOSPITAL_ID, assigned_admin_user_id=ADMIN_ID)
+    conn = connect()
+    try:
+        conn.execute("""INSERT INTO notification_outbox(event_key,event_type,request_id,status,created_at,updated_at)
+            VALUES ('scope-status','DONOR_EMERGENCY_REQUEST',?,'FAILED','2026-10-23T00:00:00+00:00','2026-10-23T00:00:00+00:00')""", (request_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    # Another hospital account cannot inspect this request or retry its events.
+    other_hospital_id, other_hospital_token = create_user("scope-other-hospital@haemopulse.invalid", "ROLE_HOSPITAL")
+    allowed = client.get(f"/api/v1/notifications/requests/{request_id}", headers={"Authorization": f"Bearer {HOSPITAL_TOKEN}"})
+    denied = client.get(f"/api/v1/notifications/requests/{request_id}", headers={"Authorization": f"Bearer {other_hospital_token}"})
+    assert allowed.status_code == 200 and allowed.json()["counts"]["FAILED"] == 1
+    assert denied.status_code == 403
+
+
+def test_brevo_adapter_success_uses_verified_sender_and_returns_message_id(monkeypatch):
+    import email_service
+
+    monkeypatch.setattr(email_service, "external_messages_enabled", lambda: True)
+    monkeypatch.setenv("BREVO_API_KEY", "test-only-api-key")
+    monkeypatch.setenv("MAIL_FROM", "HaemoPulse Verified <sender@example.invalid>")
+    monkeypatch.setenv("MAIL_FROM_NAME", "HaemoPulse Test")
+
+    class FakeResponse:
+        status = 201
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self, n=-1): return b'{"messageId":"<mock-provider-id>"}'
+
+    captured = {}
+    def fake_urlopen(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return FakeResponse()
+    monkeypatch.setattr(email_service.urllib.request, "urlopen", fake_urlopen)
+    result = email_service.send_transactional_email(
+        recipient_email="recipient@example.invalid", recipient_name="Donor", subject="Emergency #123",
+        text_content="safe text", html_content="<p>safe</p>", timeout_seconds=7,
+    )
+    assert result.status == "SUBMITTED" and result.provider_message_id == "<mock-provider-id>"
+    assert captured["timeout"] == 7
+    import json
+    payload = json.loads(captured["request"].data.decode())
+    assert payload["sender"] == {"email": "sender@example.invalid", "name": "HaemoPulse Test"}
+    assert captured["request"].get_header("Api-key") == "test-only-api-key"
+
+
+def test_brevo_adapter_classifies_quota_permanent_error_and_ambiguous_timeout(monkeypatch):
+    import io
+    import urllib.error
+    import email_service
+
+    monkeypatch.setattr(email_service, "external_messages_enabled", lambda: True)
+    monkeypatch.setenv("BREVO_API_KEY", "test-only-api-key")
+    monkeypatch.setenv("MAIL_FROM", "sender@example.invalid")
+
+    def send(**kwargs):
+        return email_service.send_transactional_email(recipient_email="r@example.invalid", recipient_name="R",
+            subject="s", text_content="t", html_content="h", **kwargs)
+
+    monkeypatch.setattr(email_service.urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(
+        urllib.error.HTTPError("https://api.brevo.com", 429, "quota", {}, io.BytesIO(b"private response"))))
+    assert send(timeout_seconds=3).status == "RETRY"
+    monkeypatch.setattr(email_service.urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(
+        urllib.error.HTTPError("https://api.brevo.com", 429, "quota", {"Retry-After": "3600"}, io.BytesIO(b"private response"))))
+    assert send(timeout_seconds=3).retry_after_seconds == 3600
+    monkeypatch.setattr(email_service.urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(
+        urllib.error.HTTPError("https://api.brevo.com", 401, "unauthorized", {}, io.BytesIO(b"secret"))))
+    permanent = send(timeout_seconds=3)
+    assert permanent.status == "FAILED" and permanent.error_code == "HTTP_401"
+    monkeypatch.setattr(email_service.urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(TimeoutError("ambiguous")))
+    ambiguous = send(timeout_seconds=3)
+    assert ambiguous.status == "NEEDS_REVIEW" and ambiguous.error_code == "AMBIGUOUS_TIMEOUT"
+
+
+def test_brevo_adapter_missing_configuration_does_not_attempt_external_call(monkeypatch):
+    import email_service
+    monkeypatch.setattr(email_service, "external_messages_enabled", lambda: True)
+    monkeypatch.delenv("BREVO_API_KEY", raising=False)
+    monkeypatch.delenv("MAIL_FROM", raising=False)
+    result = email_service.send_transactional_email(recipient_email="r@example.invalid", recipient_name="R",
+        subject="s", text_content="t", html_content="h")
+    assert result.status == "FAILED" and result.error_code == "PROVIDER_NOT_CONFIGURED"
+
+
+def test_donor_template_escapes_html_and_excludes_patient_information_and_ml_claims():
+    from email_service import render_donor_emergency_email
+    subject, text_body, html_body = render_donor_emergency_email({
+        "id": 42, "blood_group": "O+", "urgency_level": "EMERGENCY", "units_needed": 3,
+        "hospital_name": "Hospital <script>alert(1)</script>", "hospital_address": "10 <b>Main</b>",
+        "patient_name": "Sensitive Patient 123",
+    }, "Donor <Admin>")
+    combined = subject + text_body + html_body
+    assert "Sensitive Patient 123" not in combined
+    assert "Machine Learning" not in combined and "high-priority donor" not in combined
+    assert "&lt;script&gt;" in html_body and "&lt;Admin&gt;" in html_body
+    assert "CRLF" not in subject
+
+
+def test_manual_alert_and_request_acceptance_events_are_idempotent_at_database_level():
+    _clear_outbox()
+    donor_id, donor_user_id, donor_token = _linked_donor("DNR-IDEMPOTENT-ACCEPT", "idempotent-accept@haemopulse.invalid")
+    request_id = _insert_request(hospital_user_id=HOSPITAL_ID, assigned_admin_user_id=ADMIN_ID)
+    headers = {"Authorization": f"Bearer {donor_token}"}
+    first = client.post(f"/api/v1/requests/{request_id}/response", json={"action": "ACCEPT"}, headers=headers)
+    duplicate = client.post(f"/api/v1/requests/{request_id}/response", json={"action": "ACCEPT"}, headers=headers)
+    assert first.status_code == 200 and duplicate.status_code == 409
+    conn = connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM notification_outbox WHERE request_id=? AND event_type LIKE 'DONOR_ACCEPTANCE_%'", (request_id,)).fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM notification_outbox WHERE event_key LIKE ?", (f"acceptance:{request_id}:donor:%",)).fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
+def test_assignment_repair_requeues_only_missing_recipient_events():
+    _clear_outbox()
+    _, _, donor_token = _linked_donor("DNR-REPAIR-ASSIGN", "repair-assignment@haemopulse.invalid")
+    request_id = _insert_request(hospital_user_id=None, assigned_admin_user_id=None)
+    accepted = client.post(f"/api/v1/requests/{request_id}/response", json={"action": "ACCEPT"},
+                           headers={"Authorization": f"Bearer {donor_token}"})
+    assert accepted.status_code == 200 and accepted.json()["notifications_needing_review"] == 2
+    repaired = client.put(f"/api/v1/requests/{request_id}/notification-assignments",
+                          json={"hospital_user_id": HOSPITAL_ID, "assigned_admin_user_id": ADMIN_ID},
+                          headers={"Authorization": f"Bearer {ADMIN_TOKEN}"})
+    assert repaired.status_code == 200, repaired.text
+    conn = connect()
+    try:
+        statuses = {(r["event_type"], r["status"], r["recipient_user_id"]) for r in conn.execute(
+            "SELECT event_type,status,recipient_user_id FROM notification_outbox WHERE request_id=?", (request_id,)).fetchall()}
+        assert ("DONOR_ACCEPTANCE_HOSPITAL", "PENDING", HOSPITAL_ID) in statuses
+        assert ("DONOR_ACCEPTANCE_ADMIN", "PENDING", ADMIN_ID) in statuses
+        assert any(status == "FAILED" and recipient is None for _, status, recipient in statuses)
+    finally:
+        conn.close()
+
+
+def test_two_workers_cannot_claim_the_same_notification(monkeypatch):
+    import concurrent.futures
+    _clear_outbox()
+    _, donor_user_id, _ = _linked_donor("DNR-CONCURRENT-CLAIM", "concurrent-claim@haemopulse.invalid")
+    request_id = _insert_request(hospital_user_id=HOSPITAL_ID, assigned_admin_user_id=ADMIN_ID)
+    conn = connect()
+    try:
+        conn.execute("""INSERT INTO notification_outbox(event_key,event_type,request_id,donor_id,recipient_user_id,recipient_email,status,next_retry_at,created_at,updated_at)
+            VALUES ('concurrent-claim','DONOR_EMERGENCY_REQUEST',?,?,?,?,'PENDING',datetime('now'),'2026-10-23T00:00:00+00:00','2026-10-23T00:00:00+00:00')""",
+            (request_id, "DNR-CONCURRENT-CLAIM", donor_user_id, "concurrent-claim@haemopulse.invalid"))
+        conn.commit()
+    finally:
+        conn.close()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: server._claim_next_notification(), range(2)))
+    claimed = [row for row in results if row is not None and row["event_key"] == "concurrent-claim"]
+    assert len(claimed) == 1
+    conn = connect()
+    try:
+        row = conn.execute("SELECT status,attempt_count FROM notification_outbox WHERE event_key='concurrent-claim'").fetchone()
+        assert row["status"] == "PROCESSING" and row["attempt_count"] == 1
     finally:
         conn.close()

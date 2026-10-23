@@ -1,15 +1,73 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { FileText, Plus, CheckCircle, XCircle, Clock, ShieldAlert, Trash2 } from 'lucide-react';
 
-export default function RequestsView({ requestsList = [], onRequestCreated, onRequestStatusChange, onRequestDeleted }) {
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+
+export default function RequestsView({ requestsList = [], onRequestCreated, onRequestStatusChange, onRequestDeleted, onRequestAssignmentsChange, currentUser }) {
   const [showModal, setShowModal] = useState(false);
   const [newReq, setNewReq] = useState({
     hospital: '', hospital_address: '', contact_phone: '', blood: 'O+', units: 2,
-    urgency: 'HIGH', patient: ''
+    urgency: 'HIGH', patient: '', hospital_user_id: '', assigned_admin_user_id: ''
   });
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [noticeIsError, setNoticeIsError] = useState(false);
+  const [assignees, setAssignees] = useState({ hospitals: [], admins: [] });
+  const [assigneeLoadError, setAssigneeLoadError] = useState('');
+  const [assignmentDrafts, setAssignmentDrafts] = useState({});
+  const [notificationDetails, setNotificationDetails] = useState({});
+  const [notificationBusy, setNotificationBusy] = useState({});
+  const [notificationErrors, setNotificationErrors] = useState({});
+
+  useEffect(() => {
+    if (!currentUser?.token) return;
+    let cancelled = false;
+    fetch(`${API_BASE}/api/v1/notification-assignees`, { headers: { Authorization: `Bearer ${currentUser.token}` } })
+      .then(async (response) => { const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.detail || 'Assignment list unavailable.'); return data; })
+      .then((data) => { if (!cancelled) setAssignees({ hospitals: data.hospitals || [], admins: data.admins || [] }); })
+      .catch((error) => { if (!cancelled) setAssigneeLoadError(error.message); });
+    return () => { cancelled = true; };
+  }, [currentUser?.token]);
+
+  const loadNotificationDetails = async (requestId) => {
+    if (!currentUser?.token) {
+      setNotificationErrors((prev) => ({ ...prev, [requestId]: 'Sign in to inspect notification status.' }));
+      return;
+    }
+    setNotificationBusy((prev) => ({ ...prev, [requestId]: true }));
+    setNotificationErrors((prev) => ({ ...prev, [requestId]: '' }));
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/notifications/requests/${requestId}`, {
+        headers: { Authorization: `Bearer ${currentUser.token}` }
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `Could not load notification events (HTTP ${response.status}).`);
+      setNotificationDetails((prev) => ({ ...prev, [requestId]: data }));
+    } catch (error) {
+      setNotificationErrors((prev) => ({ ...prev, [requestId]: error.message || 'Notification status is unavailable.' }));
+    } finally {
+      setNotificationBusy((prev) => ({ ...prev, [requestId]: false }));
+    }
+  };
+
+  const retryNotification = async (requestId, notificationId) => {
+    if (!currentUser?.token) return;
+    setNotificationBusy((prev) => ({ ...prev, [requestId]: true }));
+    setNotificationErrors((prev) => ({ ...prev, [requestId]: '' }));
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/notifications/${notificationId}/retry`, {
+        method: 'POST', headers: { Authorization: `Bearer ${currentUser.token}` }
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `Retry could not be queued (HTTP ${response.status}).`);
+      setNotice(data.message || `Notification #${notificationId} was returned to the queue.`);
+      await loadNotificationDetails(requestId);
+    } catch (error) {
+      setNotificationErrors((prev) => ({ ...prev, [requestId]: error.message || 'Notification retry failed.' }));
+    } finally {
+      setNotificationBusy((prev) => ({ ...prev, [requestId]: false }));
+    }
+  };
 
   const handleCreate = async (e) => {
     e.preventDefault();
@@ -21,15 +79,33 @@ export default function RequestsView({ requestsList = [], onRequestCreated, onRe
         hospital_name: newReq.hospital.trim(), hospital_address: newReq.hospital_address.trim(),
         contact_phone: newReq.contact_phone.trim(), blood_group: newReq.blood,
         units_needed: Number.parseInt(newReq.units, 10), urgency_level: newReq.urgency,
-        patient_name: newReq.patient.trim(), destination_latitude: null, destination_longitude: null
+        patient_name: newReq.patient.trim(), destination_latitude: null, destination_longitude: null,
+        hospital_user_id: newReq.hospital_user_id ? Number(newReq.hospital_user_id) : null,
+        assigned_admin_user_id: newReq.assigned_admin_user_id ? Number(newReq.assigned_admin_user_id) : null
       });
       if (!saved || saved.id == null) throw new Error('The server did not confirm that the request was saved.');
-      setNotice(`Request #${saved.id} was saved to the database.`);
+      setNotice(`Request #${saved.id} was saved. ${saved.notification_summary?.message || 'Notification status is available in the notification monitor.'}`);
       setShowModal(false);
-      setNewReq({ hospital: '', hospital_address: '', contact_phone: '', blood: 'O+', units: 2, urgency: 'HIGH', patient: '' });
+      setNewReq({ hospital: '', hospital_address: '', contact_phone: '', blood: 'O+', units: 2, urgency: 'HIGH', patient: '', hospital_user_id: '', assigned_admin_user_id: '' });
     } catch (error) {
       setNotice(error.message || 'The request could not be saved.'); setNoticeIsError(true);
     } finally { setBusy(false); }
+  };
+
+  const assignmentDraftFor = (req) => assignmentDrafts[req.id] || {
+    hospital_user_id: req.hospital_user_id == null ? '' : String(req.hospital_user_id),
+    assigned_admin_user_id: req.assigned_admin_user_id == null ? '' : String(req.assigned_admin_user_id)
+  };
+
+  const handleSaveAssignments = async (req) => {
+    setNotice(''); setNoticeIsError(false);
+    try {
+      if (typeof onRequestAssignmentsChange !== 'function') throw new Error('Notification assignment service is unavailable.');
+      const result = await onRequestAssignmentsChange(req.id, assignmentDraftFor(req));
+      setNotice(result.message || `Notification routing for request #${req.id} was saved.`);
+    } catch (error) {
+      setNotice(error.message || 'Notification routing could not be saved.'); setNoticeIsError(true);
+    }
   };
 
   const handleUpdateStatus = async (id, newStatus) => {
@@ -86,6 +162,8 @@ export default function RequestsView({ requestsList = [], onRequestCreated, onRe
                 <th className="py-3 px-4">Urgency Level</th>
                 <th className="py-3 px-4">Patient / Reason</th>
                 <th className="py-3 px-4">Status</th>
+                <th className="py-3 px-4">Email notification state</th>
+                <th className="py-3 px-4 min-w-[260px]">Responsible accounts</th>
                 <th className="py-3 px-4">SQL Actions</th>
               </tr>
             </thead>
@@ -114,6 +192,43 @@ export default function RequestsView({ requestsList = [], onRequestCreated, onRe
                     }`}>
                       {req.status}
                     </span>
+                  </td>
+                  <td className="py-3 px-4 min-w-[220px] text-[10px] text-slate-300">
+                    <div>{req.notification_summary?.message || (req.notification_status && Object.entries(req.notification_status).map(([status, count]) => `${status}: ${count}`).join(' · ')) || 'No notification events recorded yet.'}</div>
+                    <button type="button" onClick={() => loadNotificationDetails(req.id)} disabled={Boolean(notificationBusy[req.id])}
+                      className="mt-2 px-2 py-1 rounded border border-slate-700 bg-slate-900 text-slate-200 disabled:opacity-50">
+                      {notificationBusy[req.id] ? 'Loading…' : notificationDetails[req.id] ? 'Refresh delivery events' : 'View delivery events'}
+                    </button>
+                    {notificationErrors[req.id] && <div role="alert" className="mt-1 text-rose-300">{notificationErrors[req.id]}</div>}
+                    {notificationDetails[req.id] && <div className="mt-2 space-y-2">
+                      <div>{Object.entries(notificationDetails[req.id].counts || {}).map(([status, count]) => `${status}: ${count}`).join(' · ') || 'No notification events.'}</div>
+                      {(notificationDetails[req.id].notifications || []).map((event) => {
+                        const retryable = event.status === 'FAILED' && /^HTTP_(429|408|425|5\d{2})$/.test(event.last_error_code || '');
+                        return <div key={event.id} className="rounded border border-slate-800 bg-slate-950/60 p-2">
+                          <div>{event.event_type.replaceAll('_', ' ')} — <strong>{event.status}</strong> (attempts: {event.attempt_count})</div>
+                          {event.last_error_code && <div className="text-amber-300">{event.last_error_code}</div>}
+                          {retryable && <button type="button" onClick={() => retryNotification(req.id, event.id)} disabled={Boolean(notificationBusy[req.id])}
+                            className="mt-1 px-2 py-1 rounded bg-amber-950 text-amber-200 border border-amber-800 disabled:opacity-50">Retry transient failure</button>}
+                        </div>;
+                      })}
+                    </div>}
+                  </td>
+                  <td className="py-3 px-4 min-w-[260px] space-y-2">
+                    <label className="block text-[10px] text-slate-500">Hospital account</label>
+                    <select value={assignmentDraftFor(req).hospital_user_id}
+                      onChange={(e) => setAssignmentDrafts((prev) => ({ ...prev, [req.id]: { ...assignmentDraftFor(req), hospital_user_id: e.target.value } }))}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-[11px] text-white">
+                      <option value="">Unassigned</option>
+                      {assignees.hospitals.map((account) => <option key={account.id} value={String(account.id)}>{account.name} (#{account.id})</option>)}
+                    </select>
+                    <label className="block text-[10px] text-slate-500">Assigned admin (optional)</label>
+                    <select value={assignmentDraftFor(req).assigned_admin_user_id}
+                      onChange={(e) => setAssignmentDrafts((prev) => ({ ...prev, [req.id]: { ...assignmentDraftFor(req), assigned_admin_user_id: e.target.value } }))}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-[11px] text-white">
+                      <option value="">Unassigned — requires review on acceptance</option>
+                      {assignees.admins.map((account) => <option key={account.id} value={String(account.id)}>{account.name} (#{account.id})</option>)}
+                    </select>
+                    <button onClick={() => handleSaveAssignments(req)} className="px-2.5 py-1 rounded bg-sky-950 text-sky-200 border border-sky-800 text-[10px] font-semibold">Save notification routing</button>
                   </td>
                   <td className="py-3 px-4 flex items-center space-x-2">
                     {req.status === 'PENDING' && (
@@ -227,6 +342,26 @@ export default function RequestsView({ requestsList = [], onRequestCreated, onRe
                   className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
                   required
                 />
+              </div>
+
+              <div>
+                <label className="text-slate-400 block mb-1 font-semibold">Responsible hospital account {newReq.urgency === 'EMERGENCY' ? '*' : '(required for emergency notifications)'}</label>
+                <select value={newReq.hospital_user_id} onChange={(e) => setNewReq({ ...newReq, hospital_user_id: e.target.value })}
+                  required={newReq.urgency === 'EMERGENCY'} disabled={assignees.hospitals.length === 0}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white">
+                  <option value="">Select a linked hospital account</option>
+                  {assignees.hospitals.map((account) => <option key={account.id} value={account.id}>{account.name} (account #{account.id})</option>)}
+                </select>
+                {assigneeLoadError && <p className="mt-1 text-rose-300">{assigneeLoadError}</p>}
+                {newReq.urgency === 'EMERGENCY' && assignees.hospitals.length === 0 && <p className="mt-1 text-amber-300">An active hospital account must exist and be selected. Do not use free-text names as account assignments.</p>}
+              </div>
+              <div>
+                <label className="text-slate-400 block mb-1 font-semibold">Assigned administrator (optional)</label>
+                <select value={newReq.assigned_admin_user_id} onChange={(e) => setNewReq({ ...newReq, assigned_admin_user_id: e.target.value })}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white">
+                  <option value="">Leave unassigned for authorized resolution</option>
+                  {assignees.admins.map((account) => <option key={account.id} value={account.id}>{account.name} (account #{account.id})</option>)}
+                </select>
               </div>
 
               <div className="flex items-center justify-end space-x-2 pt-3">

@@ -122,7 +122,7 @@ npm ci
 npm run build
 ```
 
-The tests cover password hashing and compatibility, donor self-registration and role assignment, authenticated own-profile access, shared location validation, availability-score and geographic-radius filters, inventory atomic/idempotent additions, disabled real-message delivery, and appointment status persistence. Browser-based visual/keyboard and full cross-service end-to-end checks still require a running browser environment.
+The regression suite covers password hashing and compatibility, donor self-registration and role assignment, authenticated own-profile access, shared location validation, availability-score and geographic-radius filters, inventory atomic/idempotent additions, appointment status persistence, and emergency-email eligibility, recipient routing, transaction atomicity, outbox idempotency/leases/retries, provider adapter handling, privacy, and authenticated/deduplicated webhook events. The email-provider path is mocked and external sends are disabled in tests. Browser-based visual/keyboard and full cross-service end-to-end checks still require a running browser environment.
 
 ## Security, data, and operation notes
 
@@ -136,3 +136,9 @@ The tests cover password hashing and compatibility, donor self-registration and 
 ## Existing documentation
 
 See `docs/IEEE_Project_Report.md`, `docs/UML_Diagrams.md`, `docs/PPT_Presentation_Content.md`, `docs/Viva_Questions_And_Answers.md`, and `docs/DEPLOYMENT_GUIDE.md` for the project's existing academic and deployment materials. Review their architecture/metrics against the current implementation before relying on them; some were written for earlier project iterations.
+
+## Emergency email notifications
+
+The current email-notification implementation adds a durable SQLite outbox, explicit responsible hospital/admin assignments, a backend-only Brevo transactional adapter, provider-status webhooks, and mocked regression coverage. External sending is disabled by default and must remain disabled during local development and tests.
+
+See [`docs/EMAIL_NOTIFICATIONS.md`](docs/EMAIL_NOTIFICATIONS.md) for environment variables, recipient rules, migration/rollback guidance, API routes, retry semantics, and safe testing. Do not add live credentials to source control or enable external sending without separate explicit approval for a one-recipient test.

@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
 import StatCard from '../components/StatCard';
 import MLPredictionBadge from '../components/MLPredictionBadge';
 import { Plus, FileText, CheckCircle2, Clock, MapPin, AlertCircle, Building2, X } from 'lucide-react';
 
-export default function HospitalDashboard({ donorsList = [], requestsList = [], onRequestCreated }) {
+export default function HospitalDashboard({ donorsList = [], requestsList = [], onRequestCreated, currentUser }) {
   const [showReqModal, setShowReqModal] = useState(false);
   const [newRequest, setNewRequest] = useState({
     hospital_name: '',
@@ -14,14 +15,28 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
     urgency: 'EMERGENCY',
     patient: '',
     destination_latitude: '',
-    destination_longitude: ''
+    destination_longitude: '',
+    assigned_admin_user_id: ''
   });
   const [formError, setFormError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
+  const [availableAdmins, setAvailableAdmins] = useState([]);
+  const [assignmentNotice, setAssignmentNotice] = useState('');
+  const [successNotice, setSuccessNotice] = useState('');
 
   const updateField = (field, value) => { setNewRequest((previous) => ({ ...previous, [field]: value })); setIsDirty(true); };
-  const resetRequestForm = () => { setNewRequest({ hospital_name: '', hospital_address: '', contact_phone: '', blood_group: 'O-', units: 2, urgency: 'EMERGENCY', patient: '', destination_latitude: '', destination_longitude: '' }); setIsDirty(false); };
+
+  useEffect(() => {
+    if (!currentUser?.token) return;
+    let cancelled = false;
+    fetch(`${API_BASE}/api/v1/notification-assignees`, { headers: { Authorization: `Bearer ${currentUser.token}` } })
+      .then(async (response) => { const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.detail || 'Assignment list unavailable.'); return data; })
+      .then((data) => { if (!cancelled) setAvailableAdmins(data.admins || []); })
+      .catch((error) => { if (!cancelled) setAssignmentNotice(error.message); });
+    return () => { cancelled = true; };
+  }, [currentUser?.token]);
+  const resetRequestForm = () => { setNewRequest({ hospital_name: '', hospital_address: '', contact_phone: '', blood_group: 'O-', units: 2, urgency: 'EMERGENCY', patient: '', destination_latitude: '', destination_longitude: '', assigned_admin_user_id: '' }); setIsDirty(false); };
   const closeRequestModal = useCallback(() => {
     if (isSubmitting) return;
     if (isDirty && !window.confirm('Discard the unsaved blood request?')) return;
@@ -65,10 +80,12 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
         urgency_level: newRequest.urgency,
         patient_name: newRequest.patient.trim(),
         destination_latitude: latitude,
-        destination_longitude: longitude
+        destination_longitude: longitude,
+        assigned_admin_user_id: newRequest.assigned_admin_user_id ? Number(newRequest.assigned_admin_user_id) : null
       });
       if (!saved || saved.id == null) throw new Error('The backend did not confirm a persisted request ID.');
       setIsDirty(false);
+      setSuccessNotice(saved.notification_summary?.message || `Request #${saved.id} was saved. The notification queue status should be checked in the request monitor.`);
       setShowReqModal(false);
       resetRequestForm();
     } catch (error) {
@@ -80,7 +97,8 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
 
   return (
     <div className="space-y-6">
-      
+      {successNotice && <div role="status" className="rounded-xl border border-emerald-800 bg-emerald-950/50 p-3 text-xs text-emerald-200">{successNotice}</div>}
+      {assignmentNotice && <div role="status" className="rounded-xl border border-amber-800 bg-amber-950/40 p-3 text-xs text-amber-200">{assignmentNotice}</div>}
       {/* Hospital Metrics */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard 
@@ -265,6 +283,15 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
               </div>
               <p className="text-[10px] text-slate-500">Only enter coordinates confirmed for this hospital destination; they are used by the radius filter.</p>
 
+              <div>
+                <label className="text-slate-300 block mb-1 font-semibold">Assigned administrator (optional)</label>
+                <select value={newRequest.assigned_admin_user_id} onChange={(e) => updateField('assigned_admin_user_id', e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white">
+                  <option value="">Leave unassigned for authorized resolution</option>
+                  {availableAdmins.map((account) => <option key={account.id} value={account.id}>{account.name} (account #{account.id})</option>)}
+                </select>
+                <p className="text-[10px] text-slate-500 mt-1">Acceptance notifications are sent only to this assigned admin; no account is selected automatically.</p>
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-slate-300 block mb-1 font-semibold">Blood Group Required *</label>

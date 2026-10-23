@@ -152,12 +152,31 @@ export default function App() {
         urgency_level: newReq.urgency_level || newReq.urgency,
         patient_name: newReq.patient_name || newReq.patient,
         destination_latitude: newReq.destination_latitude ?? null,
-        destination_longitude: newReq.destination_longitude ?? null
+        destination_longitude: newReq.destination_longitude ?? null,
+        hospital_user_id: newReq.hospital_user_id ?? null,
+        assigned_admin_user_id: newReq.assigned_admin_user_id ?? null
       })
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || `Request was not saved (HTTP ${res.status}).`);
     setRequestsList(prev => [data, ...prev]);
+    return data;
+  };
+
+  // Request notification routing is persisted by the backend; no optimistic recipient assignments.
+  const handleRequestAssignmentsChange = async (id, assignments) => {
+    if (!currentUser?.token) throw new Error('Sign in with an authorized admin account first.');
+    const res = await fetch(`${API_BASE}/api/v1/requests/${id}/notification-assignments`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${currentUser.token}` },
+      body: JSON.stringify({
+        hospital_user_id: assignments.hospital_user_id ? Number(assignments.hospital_user_id) : null,
+        assigned_admin_user_id: assignments.assigned_admin_user_id ? Number(assignments.assigned_admin_user_id) : null
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `Notification routing update failed (HTTP ${res.status}).`);
+    setRequestsList(prev => prev.map(r => (r.id === id ? { ...r, hospital_user_id: data.hospital_user_id, assigned_admin_user_id: data.assigned_admin_user_id } : r)));
     return data;
   };
 
@@ -218,7 +237,8 @@ export default function App() {
             <HospitalDashboard 
               donorsList={donorsList} 
               requestsList={requestsList} 
-              onRequestCreated={handleRequestCreated} 
+              onRequestCreated={handleRequestCreated}
+              currentUser={currentUser}
             />
           );
         }
@@ -252,7 +272,9 @@ export default function App() {
             requestsList={requestsList} 
             onRequestCreated={handleRequestCreated} 
             onRequestStatusChange={handleRequestStatusChange} 
-            onRequestDeleted={handleRequestDeleted} 
+            onRequestDeleted={handleRequestDeleted}
+            onRequestAssignmentsChange={handleRequestAssignmentsChange}
+            currentUser={currentUser}
           />
         );
       case 'appointments':
