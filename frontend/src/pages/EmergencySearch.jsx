@@ -1,370 +1,198 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import MLPredictionBadge from '../components/MLPredictionBadge';
-import useLocationOptions from '../hooks/useLocationOptions';
-import {
-  Search, RotateCcw, Phone, Send, Sparkles, AlertTriangle, CheckCircle,
-  MapPin, Mail, Loader, Navigation, Clock3
-} from 'lucide-react';
+import { AlertTriangle, CheckCircle2, MapPin, Mail, Search, SlidersHorizontal, Send } from 'lucide-react';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
 const BLOOD_GROUPS = ['O+', 'O-', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-'];
-const inputClass = 'w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white focus:border-blood-500 focus:outline-none focus:ring-2 focus:ring-blood-500/20 disabled:cursor-not-allowed disabled:opacity-50';
-const labelClass = 'mb-1.5 block text-xs font-semibold text-slate-300';
 
-function hasCoordinates(place) {
-  if (!place || place.latitude === null || place.latitude === undefined || place.longitude === null || place.longitude === undefined) return false;
-  const latitude = Number(place.latitude);
-  const longitude = Number(place.longitude);
-  return Number.isFinite(latitude) && Number.isFinite(longitude)
-    && latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180;
-}
-
-export default function EmergencySearch() {
-  const { districts, taluksByDistrict, loading: locationsLoading, error: locationsError } = useLocationOptions();
+export default function EmergencySearch({ requestsList = [], currentUser, activeRole }) {
   const [selectedGroup, setSelectedGroup] = useState('O+');
   const [selectedDistrict, setSelectedDistrict] = useState('');
   const [selectedTaluk, setSelectedTaluk] = useState('');
+  const [availabilityLevel, setAvailabilityLevel] = useState('');
+  const [useRadius, setUseRadius] = useState(false);
+  const [radiusKm, setRadiusKm] = useState('25');
+  const [locations, setLocations] = useState({ districts: [], taluks_by_district: {} });
   const [selectedRequestId, setSelectedRequestId] = useState('');
-  const [availableOnly, setAvailableOnly] = useState(true);
-  const [sortBy, setSortBy] = useState('availability');
-  const [radiusKm, setRadiusKm] = useState('');
-  const [requests, setRequests] = useState([]);
-  const [requestsLoading, setRequestsLoading] = useState(true);
-  const [requestError, setRequestError] = useState('');
   const [donors, setDonors] = useState([]);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const [searchError, setSearchError] = useState('');
-  const [notifiedDonors, setNotifiedDonors] = useState([]);
-  const [emailStatusMessage, setEmailStatusMessage] = useState('');
-  const [retryToken, setRetryToken] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [sendingDonor, setSendingDonor] = useState('');
+  const [notice, setNotice] = useState(null);
+  const [error, setError] = useState('');
+  const [refreshIndex, setRefreshIndex] = useState(0);
+  const alertKeysRef = useRef(new Map());
 
-  const selectedRequest = useMemo(
-    () => requests.find((request) => String(request.id) === String(selectedRequestId)) || null,
-    [requests, selectedRequestId]
+  const isAuthorizedView = Boolean(currentUser?.token && currentUser?.role === activeRole && ['ADMIN', 'HOSPITAL'].includes(currentUser.role));
+  const emergencyRequests = useMemo(
+    () => requestsList.filter((request) => String(request.status || 'PENDING').toUpperCase() === 'PENDING' && String(request.urgency_level || request.urgency || '').toUpperCase() === 'EMERGENCY'),
+    [requestsList]
   );
-  const requestHasCoordinates = hasCoordinates(selectedRequest);
-  const availableTaluks = selectedDistrict ? (taluksByDistrict[selectedDistrict] || []) : [];
-  const displayedDonors = useMemo(() => donors.slice(0, 50), [donors]);
+  const selectedRequest = emergencyRequests.find((request) => String(request.id) === selectedRequestId) || null;
+  const talukOptions = selectedDistrict ? (locations.taluks_by_district?.[selectedDistrict] || []) : [];
+  const destinationValid = selectedRequest && Number.isFinite(Number(selectedRequest.destination_latitude)) && Number.isFinite(Number(selectedRequest.destination_longitude)) && selectedRequest.destination_latitude !== null && selectedRequest.destination_longitude !== null;
 
   useEffect(() => {
-    const controller = new AbortController();
-    async function fetchRequests() {
-      setRequestsLoading(true);
-      setRequestError('');
-      try {
-        const response = await fetch(`${API_BASE_URL}/api/v1/requests`, { signal: controller.signal });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || 'Could not load blood requests.');
-        setRequests(Array.isArray(data) ? data : []);
-      } catch (error) {
-        if (error.name !== 'AbortError') setRequestError(error.message || 'Could not load blood requests.');
-      } finally {
-        if (!controller.signal.aborted) setRequestsLoading(false);
-      }
-    }
-    fetchRequests();
-    return () => controller.abort();
+    let cancelled = false;
+    fetch(`${API_BASE}/api/v1/locations`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Location catalogue is unavailable.');
+        return response.json();
+      })
+      .then((data) => { if (!cancelled) setLocations(data); })
+      .catch((err) => { if (!cancelled) setError(err.message); });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
-    const controller = new AbortController();
-    async function searchDonors() {
-      setSearchLoading(true);
-      setSearchError('');
-      try {
-        const params = new URLSearchParams({ blood_group: selectedGroup, available_only: String(availableOnly) });
-        if (selectedDistrict) params.set('district', selectedDistrict);
-        if (selectedTaluk) params.set('taluk', selectedTaluk);
-        if (selectedRequestId) params.set('request_id', selectedRequestId);
-        if (requestHasCoordinates && radiusKm !== '') params.set('radius_km', radiusKm);
-        if (sortBy === 'distance' && requestHasCoordinates) params.set('sort_by', 'distance');
-        const response = await fetch(`${API_BASE_URL}/api/v1/donors?${params.toString()}`, { signal: controller.signal });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || 'Donor search failed.');
-        setDonors(Array.isArray(data) ? data : []);
-      } catch (error) {
-        if (error.name !== 'AbortError') {
-          setSearchError(error.message || 'Donor search failed.');
-          setDonors([]);
-        }
-      } finally {
-        if (!controller.signal.aborted) setSearchLoading(false);
-      }
+    if (!selectedRequestId && emergencyRequests.length) {
+      const firstRequest = emergencyRequests[0];
+      setSelectedRequestId(String(firstRequest.id));
+      setSelectedGroup(String(firstRequest.blood_group || firstRequest.blood || 'O+').toUpperCase());
     }
-    searchDonors();
-    return () => controller.abort();
-  }, [selectedGroup, selectedDistrict, selectedTaluk, selectedRequestId, availableOnly, radiusKm, sortBy, requestHasCoordinates, retryToken]);
+    if (selectedRequestId && !emergencyRequests.some((request) => String(request.id) === selectedRequestId)) {
+      const nextRequest = emergencyRequests[0];
+      setSelectedRequestId(nextRequest ? String(nextRequest.id) : '');
+      if (nextRequest) setSelectedGroup(String(nextRequest.blood_group || nextRequest.blood || 'O+').toUpperCase());
+    }
+  }, [emergencyRequests, selectedRequestId]);
 
-  const handleRequestChange = (event) => {
-    const nextId = event.target.value;
-    setSelectedRequestId(nextId);
-    setRadiusKm('');
-    setSortBy('availability');
-    const request = requests.find((item) => String(item.id) === nextId);
-    if (request?.blood_group) setSelectedGroup(request.blood_group);
-  };
+  useEffect(() => {
+    let cancelled = false;
+    if (!isAuthorizedView) {
+      setDonors([]);
+      setError('Sign in with an authorized administrator or hospital account to search eligible donors. Changing the role view does not grant access.');
+      return () => { cancelled = true; };
+    }
+    if (useRadius && (!destinationValid || !Number.isFinite(Number(radiusKm)) || Number(radiusKm) <= 0 || Number(radiusKm) > 500)) {
+      setDonors([]);
+      setError(!destinationValid ? 'The selected emergency request has no valid destination coordinates. Add coordinates to that request before enabling radius filtering.' : 'Radius must be greater than 0 and no more than 500 km.');
+      return () => { cancelled = true; };
+    }
 
-  const resetFilters = () => {
-    setSelectedGroup('O+');
-    setSelectedDistrict('');
-    setSelectedTaluk('');
-    setSelectedRequestId('');
-    setAvailableOnly(true);
-    setSortBy('availability');
-    setRadiusKm('');
-    setEmailStatusMessage('');
-  };
+    const params = new URLSearchParams({ blood_group: selectedGroup, eligible_only: 'true' });
+    if (selectedDistrict) params.set('district', selectedDistrict);
+    if (selectedTaluk) params.set('taluk', selectedTaluk);
+    if (availabilityLevel) params.set('availability_level', availabilityLevel);
+    // Send destination coordinates whenever available so distances and nearest-first ordering
+    // work even when the optional radius cutoff is disabled.
+    if (destinationValid) {
+      params.set('destination_latitude', String(selectedRequest.destination_latitude));
+      params.set('destination_longitude', String(selectedRequest.destination_longitude));
+    }
+    if (useRadius) params.set('radius_km', String(Number(radiusKm)));
+    setLoading(true);
+    setError('');
+    fetch(`${API_BASE}/api/v1/donors?${params.toString()}`, { headers: { Authorization: `Bearer ${currentUser.token}` } })
+      .then(async (response) => {
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || `Donor search failed (HTTP ${response.status}).`);
+        if (!Array.isArray(data)) throw new Error('Donor search returned an unexpected response.');
+        if (!cancelled) setDonors(data);
+      })
+      .catch((err) => { if (!cancelled) { setDonors([]); setError(err.message); } })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [isAuthorizedView, currentUser?.token, selectedGroup, selectedDistrict, selectedTaluk, availabilityLevel, useRadius, radiusKm, selectedRequest, destinationValid, refreshIndex]);
 
-  const handleNotify = async (donor) => {
+  const sendAlert = async (donor) => {
+    if (!isAuthorizedView) return;
     if (!selectedRequest) {
-      setEmailStatusMessage('Select the actual blood request before dispatching an emergency alert.');
+      setNotice({ type: 'error', text: 'Select a pending emergency requisition before creating a donor alert.' });
       return;
     }
-    const donorKey = donor.id || donor.donor_id;
-    if (notifiedDonors.includes(donorKey)) return;
-    setEmailStatusMessage(`Sending emergency alert for ${selectedRequest.hospital_name}…`);
+    if (String(donor.blood_group || '').toUpperCase() !== String(selectedRequest.blood_group || selectedRequest.blood || '').toUpperCase()) {
+      setNotice({ type: 'error', text: 'The donor blood group does not match the selected request.' });
+      return;
+    }
+    const donorKey = String(donor.id ?? donor.donor_id);
+    setSendingDonor(donorKey);
+    setNotice(null);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/v1/donors/send-email-alert`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          donor_email: donor.email,
-          donor_name: donor.name,
-          blood_group: donor.blood_group,
-          hospital_name: selectedRequest.hospital_name,
-          urgency: selectedRequest.urgency_level,
-          patient: selectedRequest.patient_name
-        })
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || 'The emergency alert request failed.');
-      if (data.sent) {
-        setNotifiedDonors((current) => [...current, donorKey]);
-        setEmailStatusMessage(`Emergency email successfully sent to ${donor.name}.`);
-      } else {
-        setEmailStatusMessage(`The backend did not send an email to ${donor.name}. Check the SMTP configuration before retrying.`);
+      // Reuse a stable key for the same donor/request pair so an uncertain network retry
+      // cannot persist or send the same alert twice. A distinct request gets a new key.
+      const alertIdentity = `${selectedRequest.id}:${donorKey}:${selectedGroup}`;
+      let key = alertKeysRef.current.get(alertIdentity);
+      if (!key) {
+        key = globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        alertKeysRef.current.set(alertIdentity, key);
       }
-    } catch (error) {
-      setEmailStatusMessage(error.message || `Could not send an emergency alert to ${donor.name}.`);
+      const response = await fetch(`${API_BASE}/api/v1/donors/send-email-alert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${currentUser.token}` },
+        body: JSON.stringify({ donor_id: donorKey, blood_group: selectedGroup, request_id: selectedRequest.id, idempotency_key: key })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `Alert request failed (HTTP ${response.status}).`);
+      const delivery = data.delivery_status || data.status || 'UNKNOWN';
+      const statusText = delivery === 'DELIVERED'
+        ? 'External notification delivered.'
+        : delivery === 'QUEUED'
+          ? 'Alert was queued, but delivery is not yet confirmed.'
+          : delivery === 'DISABLED'
+            ? 'Alert was persisted, but external messaging is disabled.'
+            : delivery === 'NOT_CONFIGURED'
+              ? 'Alert was persisted, but the email provider is not configured.'
+              : delivery === 'FAILED'
+                ? 'Alert was persisted, but external delivery failed.'
+                : `Alert accepted; provider status: ${delivery}.`;
+      setNotice({ type: delivery === 'DELIVERED' ? 'success' : 'warning', text: `${data.persisted ? 'Alert persisted. ' : ''}${statusText}` });
+      setRefreshIndex((value) => value + 1);
+    } catch (err) {
+      setNotice({ type: 'error', text: err.message || 'Unable to create the alert.' });
+    } finally {
+      setSendingDonor('');
     }
   };
 
   return (
     <div className="space-y-6">
-      <section className="overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-900 to-blood-950/30 shadow-xl">
-        <div className="flex flex-col gap-4 border-b border-slate-800 p-5 sm:p-6 lg:flex-row lg:items-center lg:justify-between">
+      <section className="p-6 rounded-2xl glass-panel border border-slate-800 space-y-5">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-800 pb-4">
           <div>
-            <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-blood-300">
-              <Sparkles className="h-4 w-4" />
-              <span>Emergency response workspace</span>
-            </div>
-            <h2 className="text-2xl font-black tracking-tight text-white sm:text-3xl">Emergency Donor Search</h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
-              Search donors using backend-enforced blood group, availability, district and taluk filters. Select a saved blood request to calculate distance from its recorded coordinates.
-            </p>
+            <div className="flex items-center gap-2 text-xs font-semibold text-blood-400 mb-1"><Search className="w-4 h-4" /><span>Authorized emergency donor search</span></div>
+            <h2 className="text-2xl font-black text-white">Emergency Donor Search &amp; Alert</h2>
+            <p className="text-xs text-slate-400 mt-1">Filters run on the backend. Only opted-in, eligible donors are returned when recipient filtering is enabled.</p>
           </div>
-          <button type="button" onClick={resetFilters} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-950 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800">
-            <RotateCcw className="h-4 w-4" /> Reset filters
-          </button>
+          <div className="text-xs text-slate-400">{loading ? 'Searching…' : `${donors.length} eligible result${donors.length === 1 ? '' : 's'}`}</div>
         </div>
 
-        <div className="space-y-5 p-5 sm:p-6">
-          <div>
-            <label className={labelClass} htmlFor="emergency-request">Blood request / hospital location</label>
-            <select id="emergency-request" value={selectedRequestId} onChange={handleRequestChange} className={inputClass} disabled={requestsLoading}>
-              <option value="">Select a saved request to calculate distance (optional)</option>
-              {requests.map((request) => (
-                <option key={request.id} value={request.id}>
-                  #{request.id} · {request.hospital_name} · {request.blood_group} · {request.urgency_level}
-                </option>
-              ))}
-            </select>
-            {requestsLoading && <p className="mt-1 text-xs text-slate-500">Loading saved blood requests…</p>}
-            {requestError && <p role="alert" className="mt-1 text-xs text-rose-300">{requestError}</p>}
-            {selectedRequest && (
-              <div className="mt-2 flex flex-col gap-1 rounded-xl border border-slate-700 bg-slate-950/70 p-3 text-xs sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-start gap-2 text-slate-300">
-                  <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-blood-400" />
-                  <div>
-                    <p className="font-semibold text-white">{selectedRequest.hospital_name}</p>
-                    <p className="mt-0.5 text-slate-400">{[selectedRequest.taluk, selectedRequest.district, selectedRequest.hospital_address].filter(Boolean).join(' · ') || 'Location details not recorded'}</p>
-                  </div>
-                </div>
-                <span className={`mt-1 inline-flex w-fit items-center gap-1 rounded-full px-2.5 py-1 font-semibold sm:mt-0 ${requestHasCoordinates ? 'bg-emerald-950 text-emerald-300' : 'bg-amber-950 text-amber-200'}`}>
-                  {requestHasCoordinates ? <Navigation className="h-3.5 w-3.5" /> : <AlertTriangle className="h-3.5 w-3.5" />}
-                  {requestHasCoordinates ? 'Coordinates available' : 'Distance unavailable without coordinates'}
-                </span>
-              </div>
-            )}
-          </div>
+        {error && <div role="alert" className="p-3 rounded-xl bg-amber-950/60 border border-amber-800 text-amber-200 text-xs">{error}</div>}
+        {notice && <div role="status" className={`p-3 rounded-xl border text-xs ${notice.type === 'success' ? 'bg-emerald-950/50 border-emerald-800 text-emerald-200' : notice.type === 'error' ? 'bg-rose-950/50 border-rose-800 text-rose-200' : 'bg-amber-950/50 border-amber-800 text-amber-200'}`}>{notice.text}</div>}
 
-          <div>
-            <label className={labelClass}>Required blood group</label>
-            <div className="flex flex-wrap gap-2" role="group" aria-label="Required blood group">
-              {BLOOD_GROUPS.map((group) => (
-                <button
-                  key={group}
-                  type="button"
-                  aria-pressed={selectedGroup === group}
-                  onClick={() => setSelectedGroup(group)}
-                  className={`min-w-14 rounded-xl border px-4 py-2.5 text-sm font-extrabold transition focus:outline-none focus:ring-2 focus:ring-blood-400/50 ${selectedGroup === group ? 'border-blood-400 bg-blood-600 text-white shadow-lg' : 'border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-500 hover:bg-slate-800'}`}
-                >{group}</button>
-              ))}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <div>
-              <label className={labelClass} htmlFor="emergency-district">District</label>
-              <select id="emergency-district" value={selectedDistrict} onChange={(event) => { setSelectedDistrict(event.target.value); setSelectedTaluk(''); }} className={inputClass} disabled={locationsLoading}>
-                <option value="">All districts</option>
-                {districts.map((district) => <option key={district} value={district}>{district}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className={labelClass} htmlFor="emergency-taluk">Taluk</label>
-              <select id="emergency-taluk" value={selectedTaluk} onChange={(event) => setSelectedTaluk(event.target.value)} className={inputClass} disabled={!selectedDistrict || locationsLoading}>
-                <option value="">All taluks in selected district</option>
-                {availableTaluks.map((taluk) => <option key={taluk} value={taluk}>{taluk}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className={labelClass} htmlFor="emergency-sort">Sort results</label>
-              <select id="emergency-sort" value={sortBy} onChange={(event) => setSortBy(event.target.value)} className={inputClass}>
-                <option value="availability">Availability score</option>
-                <option value="distance" disabled={!requestHasCoordinates}>Nearest to request</option>
-              </select>
-            </div>
-            <div>
-              <label className={labelClass} htmlFor="emergency-radius">Distance radius (km)</label>
-              <input id="emergency-radius" type="number" min="0.1" max="5000" step="0.1" value={radiusKm} onChange={(event) => setRadiusKm(event.target.value)} className={inputClass} placeholder="No radius limit" disabled={!requestHasCoordinates} />
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-3 border-t border-slate-800 pt-4 sm:flex-row sm:items-center sm:justify-between">
-            <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
-              <input type="checkbox" checked={availableOnly} onChange={(event) => setAvailableOnly(event.target.checked)} className="h-4 w-4 rounded border-slate-600 bg-slate-900 text-blood-500 focus:ring-blood-500" />
-              Show only donors marked available
-            </label>
-            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-              {selectedDistrict && <span className="rounded-full border border-slate-700 bg-slate-950 px-2.5 py-1">District: {selectedDistrict}</span>}
-              {selectedTaluk && <span className="rounded-full border border-slate-700 bg-slate-950 px-2.5 py-1">Taluk: {selectedTaluk}</span>}
-              {selectedRequest && <span className="rounded-full border border-slate-700 bg-slate-950 px-2.5 py-1">Request #{selectedRequest.id}</span>}
-            </div>
-          </div>
-
-          {(locationsError || searchError || emailStatusMessage) && (
-            <div role="status" className={`flex items-start gap-2 rounded-xl border p-3 text-sm ${searchError || locationsError ? 'border-rose-800 bg-rose-950/40 text-rose-200' : 'border-slate-700 bg-slate-950 text-slate-300'}`}>
-              <Mail className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{searchError || locationsError || emailStatusMessage}</span>
-            </div>
-          )}
+        <div>
+          <label className="text-xs font-bold text-slate-300 uppercase tracking-wide block mb-2">Required blood group</label>
+          <div className="flex flex-wrap gap-2">{BLOOD_GROUPS.map((group) => <button type="button" key={group} onClick={() => setSelectedGroup(group)} aria-pressed={selectedGroup === group} className={`px-4 py-2 rounded-xl text-sm font-extrabold ${selectedGroup === group ? 'bg-blood-600 text-white border border-blood-400' : 'bg-slate-900 text-slate-300 border border-slate-800 hover:bg-slate-800'}`}>{group}</button>)}</div>
         </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 text-xs">
+          <div><label htmlFor="emergency-district" className="block text-slate-300 font-semibold mb-1">District</label><select id="emergency-district" value={selectedDistrict} onChange={(event) => { setSelectedDistrict(event.target.value); setSelectedTaluk(''); }} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-white"><option value="">All districts</option>{locations.districts.map((district) => <option key={district} value={district}>{district}</option>)}</select></div>
+          <div><label htmlFor="emergency-taluk" className="block text-slate-300 font-semibold mb-1">Taluk</label><select id="emergency-taluk" value={selectedTaluk} onChange={(event) => setSelectedTaluk(event.target.value)} disabled={!selectedDistrict} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-white disabled:opacity-50"><option value="">All taluks</option>{talukOptions.map((taluk) => <option key={taluk} value={taluk}>{taluk}</option>)}</select></div>
+          <div><label htmlFor="availability-level" className="block text-slate-300 font-semibold mb-1">Availability score</label><select id="availability-level" value={availabilityLevel} onChange={(event) => setAvailabilityLevel(event.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-white"><option value="">All score levels</option><option value="HIGH">High (≥ 75)</option><option value="MEDIUM">Medium (40–74.9)</option><option value="LOW">Low (&lt; 40)</option></select></div>
+          <div><label htmlFor="emergency-request" className="block text-slate-300 font-semibold mb-1">Pending emergency request</label><select id="emergency-request" value={selectedRequestId} onChange={(event) => { const nextId = event.target.value; const nextRequest = emergencyRequests.find((request) => String(request.id) === nextId); setSelectedRequestId(nextId); if (nextRequest) setSelectedGroup(String(nextRequest.blood_group || nextRequest.blood || '').toUpperCase()); setNotice(null); }} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-white"><option value="">Select a request</option>{emergencyRequests.map((request) => <option key={request.id} value={String(request.id)}>#{request.id} · {request.blood_group || request.blood} · {request.hospital_name || request.hospital}</option>)}</select></div>
+        </div>
+
+        <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col md:flex-row md:items-center gap-3">
+          <label className="flex items-center gap-2 text-xs font-semibold text-slate-200"><input type="checkbox" checked={useRadius} onChange={(event) => setUseRadius(event.target.checked)} className="accent-red-600" />Filter by distance from selected request</label>
+          <div className="flex items-center gap-2"><label htmlFor="radius-km" className="text-xs text-slate-400">Radius (km)</label><input id="radius-km" type="number" min="0.1" max="500" step="0.1" value={radiusKm} onChange={(event) => setRadiusKm(event.target.value)} disabled={!useRadius} className="w-24 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white disabled:opacity-40" /></div>
+          <p className="text-[11px] text-slate-500">Distance uses the selected request's stored coordinates. Missing distances are excluded when a radius is active.</p>
+        </div>
+        {!emergencyRequests.length && <p className="text-xs text-amber-300">There are no pending emergency requests available to select. Create a request from an authorized hospital account first.</p>}
       </section>
 
-      <section className="space-y-4">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h3 className="text-lg font-bold text-white">Matching donors</h3>
-            <p className="mt-1 text-sm text-slate-400">
-              {searchLoading ? 'Applying filters on the backend…' : `${donors.length} donor${donors.length === 1 ? '' : 's'} matched for ${selectedGroup}${selectedDistrict ? ` · ${selectedDistrict}` : ''}${selectedTaluk ? ` · ${selectedTaluk}` : ''}.`}
-              {donors.length > 50 ? ' Showing the first 50 results.' : ''}
-            </p>
-          </div>
-          {requestHasCoordinates && <span className="inline-flex items-center gap-1.5 text-xs text-slate-400"><Navigation className="h-3.5 w-3.5" /> Straight-line distance from request coordinates, not driving distance</span>}
-        </div>
-
-        {searchLoading ? (
-          <div className="flex min-h-40 items-center justify-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/50 text-sm text-slate-300">
-            <Loader className="h-5 w-5 animate-spin text-blood-400" /> Searching eligible donors…
-          </div>
-        ) : searchError ? (
-          <div className="rounded-2xl border border-rose-800 bg-rose-950/30 p-6 text-center">
-            <AlertTriangle className="mx-auto mb-2 h-8 w-8 text-rose-300" />
-            <p className="font-semibold text-white">Donor search could not be completed</p>
-            <p className="mt-1 text-sm text-rose-200">{searchError}</p>
-            <button type="button" onClick={() => setRetryToken((current) => current + 1)} className="mt-3 rounded-lg border border-rose-700 px-3 py-2 text-xs font-semibold text-rose-100 hover:bg-rose-950">Retry search</button>
-          </div>
-        ) : donors.length === 0 ? (
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-8 text-center">
-            <Search className="mx-auto mb-2 h-8 w-8 text-slate-500" />
-            <p className="font-semibold text-white">No donors match the current filters</p>
-            <p className="mt-1 text-sm text-slate-400">Try another blood group or location, or reset the filters.</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            {displayedDonors.map((donor, index) => {
-              const donorKey = donor.id || donor.donor_id;
-              const isNotified = notifiedDonors.includes(donorKey);
-              const score = donor.availability_score ?? 0;
-              const category = donor.availability_status || 'UNKNOWN';
-              const distance = donor.distance_from_request_km;
-              const lastDonation = donor.last_donation_date || (donor.last_donation_days != null ? `${donor.last_donation_days} days ago` : 'Not recorded');
-              const phone = donor.phone || '';
-              return (
-                <article key={donorKey} className="flex flex-col justify-between gap-4 rounded-2xl border border-slate-800 bg-slate-900/70 p-5 shadow-lg transition hover:border-slate-700">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex min-w-0 items-start gap-3">
-                      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-blood-800 bg-blood-950 text-sm font-black text-blood-300">#{index + 1}</div>
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h4 className="font-bold text-white">{donor.name || 'Registered donor'}</h4>
-                          <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">{donor.donor_id || donor.id}</span>
-                        </div>
-                        <p className="mt-1 text-xs text-slate-400">{[donor.taluk, donor.district, donor.location].filter(Boolean).filter((item, itemIndex, all) => all.indexOf(item) === itemIndex).join(' · ') || 'Location not recorded'}</p>
-                        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                          <span className="rounded-lg border border-blood-800 bg-blood-950/50 px-2 py-1 font-black text-blood-300">{donor.blood_group}</span>
-                          <span className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 font-semibold ${donor.is_available ? 'bg-emerald-950 text-emerald-300' : 'bg-slate-800 text-slate-400'}`}>
-                            {donor.is_available ? <CheckCircle className="h-3.5 w-3.5" /> : <Clock3 className="h-3.5 w-3.5" />}
-                            {donor.is_available ? 'Available' : 'Not marked available'}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                    <MLPredictionBadge category={category} score={score} />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3 rounded-xl border border-slate-800 bg-slate-950/80 p-3 sm:grid-cols-3">
-                    <div>
-                      <span className="block text-[11px] text-slate-500">Distance from request</span>
-                      <span className={`mt-1 block text-sm font-bold ${distance == null ? 'text-slate-400' : 'text-sky-300'}`}>
-                        {distance == null ? 'Distance unavailable' : `${Number(distance).toFixed(1)} km away`}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="block text-[11px] text-slate-500">Last donation</span>
-                      <span className="mt-1 block text-sm font-semibold text-slate-200">{lastDonation}</span>
-                    </div>
-                    <div>
-                      <span className="block text-[11px] text-slate-500">Response rate</span>
-                      <span className="mt-1 block text-sm font-semibold text-emerald-300">{donor.previous_response_rate == null ? 'Not recorded' : `${Math.round(Number(donor.previous_response_rate) * 100)}%`}</span>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col gap-2 border-t border-slate-800 pt-3 sm:flex-row sm:items-center sm:justify-between">
-                    {phone ? (
-                      <a href={`tel:${phone}`} className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-800 px-3.5 py-2.5 text-xs font-semibold text-slate-200 transition hover:bg-slate-700">
-                        <Phone className="h-3.5 w-3.5 text-slate-400" /> Call donor
-                      </a>
-                    ) : (
-                      <span className="text-xs text-slate-500">Phone number not recorded</span>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => handleNotify(donor)}
-                      disabled={isNotified || !selectedRequest}
-                      title={!selectedRequest ? 'Select a saved blood request first' : ''}
-                      className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold transition disabled:cursor-not-allowed disabled:opacity-50 ${isNotified ? 'border border-emerald-800 bg-emerald-950 text-emerald-300' : 'bg-gradient-to-r from-blood-600 to-blood-700 text-white hover:from-blood-500 hover:to-blood-600'}`}
-                    >
-                      {isNotified ? <CheckCircle className="h-4 w-4" /> : <Send className="h-4 w-4" />}
-                      {isNotified ? 'Email sent' : 'Dispatch alert for selected request'}
-                    </button>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        )}
+      <section className="space-y-3">
+        <h3 className="text-base font-bold text-white flex items-center gap-2"><SlidersHorizontal className="w-4 h-4 text-blood-400" /> Eligible donor results <span className="text-xs text-slate-400 font-normal">Availability score is an application/database field, not a delivery guarantee.</span></h3>
+        {!loading && !error && donors.length === 0 && <div className="p-8 text-center glass-panel rounded-2xl border border-slate-800"><AlertTriangle className="w-8 h-8 text-amber-400 mx-auto mb-2" /><p className="text-sm font-bold text-slate-300">No donors satisfy these filters.</p><p className="text-xs text-slate-500 mt-1">Eligibility and explicit emergency-contact consent are checked by the server.</p></div>}
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">{donors.map((donor, index) => {
+          const score = donor.availability_score == null ? null : Number(donor.availability_score);
+          const category = score == null ? null : score >= 75 ? 'HIGH' : score >= 40 ? 'MEDIUM' : 'LOW';
+          const donorKey = String(donor.id ?? donor.donor_id);
+          const distance = donor.distance_km === null || donor.distance_km === undefined ? 'Distance unavailable' : `${Number(donor.distance_km).toFixed(1)} km`;
+          return <article key={donorKey} className="p-5 rounded-2xl glass-panel border border-slate-800 space-y-4">
+            <div className="flex items-start justify-between gap-3"><div><h4 className="text-sm font-bold text-white">{donor.name}</h4><p className="text-xs text-slate-400 mt-1">{donor.blood_group} · {donor.district || 'District unavailable'}{donor.taluk ? `, ${donor.taluk}` : ''}</p><p className="text-xs text-slate-500 mt-1 flex items-center gap-1"><MapPin className="w-3 h-3" />{distance}</p></div>{score == null ? <span className="px-2 py-1 rounded-lg border border-slate-700 text-slate-400 text-[11px]">No stored score</span> : <MLPredictionBadge category={category} score={score} />}</div>
+            <div className="grid grid-cols-3 gap-2 p-3 rounded-xl bg-slate-900 border border-slate-800 text-[11px]"><div><span className="text-slate-500 block">Last donation</span><span className="text-slate-200">{donor.last_donation_days == null ? 'Unknown' : `${donor.last_donation_days} days ago`}</span></div><div><span className="text-slate-500 block">Frequency</span><span className="text-slate-200">{donor.donation_frequency ?? 'Unknown'}</span></div><div><span className="text-slate-500 block">Rank</span><span className="text-slate-200">#{index + 1}</span></div></div>
+            <button type="button" disabled={!selectedRequest || sendingDonor === donorKey || !isAuthorizedView || String(donor.blood_group).toUpperCase() !== String(selectedRequest?.blood_group || selectedRequest?.blood || '').toUpperCase()} onClick={() => sendAlert(donor)} className="w-full px-4 py-2.5 rounded-xl bg-blood-700 hover:bg-blood-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold flex items-center justify-center gap-2"><Send className="w-4 h-4" />{sendingDonor === donorKey ? 'Creating alert…' : 'Create emergency alert'}</button>
+          </article>;
+        })}</div>
       </section>
     </div>
   );

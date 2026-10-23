@@ -10,13 +10,9 @@ dist/
 .venv/
 
 
-
-
-# Database files and backups
 *.db
 *.sqlite
 *.sqlite3
 *.db-wal
 *.db-shm
 *.backup
-*_backup*

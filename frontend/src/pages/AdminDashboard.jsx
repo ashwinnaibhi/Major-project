@@ -1,20 +1,62 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import StatCard from '../components/StatCard';
 import MLPredictionBadge from '../components/MLPredictionBadge';
 import { Users, Droplets, AlertOctagon, BrainCircuit, Activity, Trash2, Heart, Clock, Calendar, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 
-export default function AdminDashboard({ onNavigate, donorsList = [], onDeleteDonor }) {
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+const ML_API_BASE = import.meta.env.VITE_ML_API_BASE_URL || 'http://localhost:8000';
+
+export default function AdminDashboard({ onNavigate, donorsList = [], requestsList = [], currentUser, onDeleteDonor }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 25;
+  const [inventoryRows, setInventoryRows] = useState(null);
+  const [modelMetrics, setModelMetrics] = useState(null);
+  const [operationNotice, setOperationNotice] = useState('');
+  const [operationError, setOperationError] = useState(false);
+  const isAdmin = Boolean(currentUser?.token && currentUser?.isLoggedIn && currentUser?.role === 'ADMIN');
 
-  const totalDonorsCount = donorsList.length;
-  const highAvailCount = donorsList.filter(d => d.category === 'HIGH' || d.availability_status === 'HIGH').length;
+  useEffect(() => {
+    let cancelled = false;
+    if (!isAdmin) { setInventoryRows(null); return () => { cancelled = true; }; }
+    fetch(`${API_BASE}/api/v1/inventory`, { headers: { Authorization: `Bearer ${currentUser.token}` } })
+      .then(async (response) => { const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.detail || 'Inventory summary unavailable.'); return data; })
+      .then((data) => { if (!cancelled && Array.isArray(data)) setInventoryRows(data); })
+      .catch(() => { if (!cancelled) setInventoryRows(null); });
+    return () => { cancelled = true; };
+  }, [isAdmin, currentUser?.token]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${ML_API_BASE}/metrics`)
+      .then(async (response) => { const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error('Model evaluation metrics unavailable.'); return data; })
+      .then((data) => { if (!cancelled && data?.['Random Forest']) setModelMetrics(data['Random Forest']); })
+      .catch(() => { if (!cancelled) setModelMetrics(null); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleDelete = async (donor) => {
+    if (!isAdmin || typeof onDeleteDonor !== 'function') {
+      setOperationNotice('Deleting donor records requires an authenticated administrator.'); setOperationError(true); return;
+    }
+    if (!window.confirm(`Delete donor record ${donor.donor_id || donor.id}? This cannot be undone.`)) return;
+    setOperationNotice(''); setOperationError(false);
+    try { await onDeleteDonor(donor.id || donor.donor_id); setOperationNotice('Donor record deleted.'); }
+    catch (error) { setOperationNotice(error.message || 'Donor deletion failed.'); setOperationError(true); }
+  };
+
+  const totalStock = Array.isArray(inventoryRows) ? inventoryRows.reduce((sum, row) => sum + Number(row.units_available || 0), 0) : null;
+  const pendingCount = requestsList.filter((request) => String(request.status || 'PENDING').toUpperCase() === 'PENDING').length;
+  const emergencyCount = requestsList.filter((request) => String(request.status || 'PENDING').toUpperCase() === 'PENDING' && String(request.urgency_level || '').toUpperCase() === 'EMERGENCY').length;
+
+  const visibleDonors = isAdmin ? donorsList : [];
+  const totalDonorsCount = visibleDonors.length;
+  const highAvailCount = visibleDonors.filter(d => d.category === 'HIGH' || d.availability_status === 'HIGH' || (d.availability_score != null && Number(d.availability_score) >= 75)).length;
 
   const filteredDonors = useMemo(() => {
-    if (!searchTerm.trim()) return donorsList;
+    if (!searchTerm.trim()) return visibleDonors;
     const term = searchTerm.toLowerCase();
-    return donorsList.filter(d => 
+    return visibleDonors.filter(d => 
       (d.name && d.name.toLowerCase().includes(term)) ||
       (d.donor_id && d.donor_id.toLowerCase().includes(term)) ||
       (d.blood_group && d.blood_group.toLowerCase().includes(term)) ||
@@ -23,7 +65,7 @@ export default function AdminDashboard({ onNavigate, donorsList = [], onDeleteDo
       (d.taluk && d.taluk.toLowerCase().includes(term)) ||
       (d.location && d.location.toLowerCase().includes(term))
     );
-  }, [donorsList, searchTerm]);
+  }, [visibleDonors, searchTerm]);
 
   const totalPages = Math.max(1, Math.ceil(filteredDonors.length / pageSize));
   const currentSafePage = Math.min(currentPage, totalPages);
@@ -67,29 +109,32 @@ export default function AdminDashboard({ onNavigate, donorsList = [], onDeleteDo
         />
         <StatCard
           title="Total Blood Stock"
-          value="151 Units"
-          subtitle="Across 8 blood groups"
+          value={totalStock == null ? 'Unavailable' : `${totalStock} Units`}
+          subtitle={Array.isArray(inventoryRows) ? `Across ${inventoryRows.length} inventory records` : 'Inventory data could not be retrieved'}
           icon={Droplets}
-          trend="Stock Health: Optimal"
+          trend={Array.isArray(inventoryRows) ? 'Persisted inventory records' : 'Requires an authenticated administrator'}
           color="blood"
         />
         <StatCard
           title="Active Requests"
-          value="2 Pending"
-          subtitle="1 Emergency dispatch"
+          value={`${pendingCount} Pending`}
+          subtitle={`${emergencyCount} pending emergency requests`}
           icon={AlertOctagon}
-          trend="Avg response time: 18m"
+          trend="Live request records"
           color="amber"
         />
         <StatCard
           title="ML Engine Accuracy"
-          value="90.42%"
-          subtitle="F1 Score: 93.80%"
+          value={modelMetrics?.Accuracy == null ? 'Unavailable' : `${Number(modelMetrics.Accuracy).toFixed(2)}%`}
+          subtitle={modelMetrics?.F1_Score == null ? 'Evaluation metrics unavailable' : `F1 Score: ${Number(modelMetrics.F1_Score).toFixed(2)}%`}
           icon={BrainCircuit}
-          trend="Random Forest v1.0 Model"
+          trend="Stored model evaluation snapshot; synthetic dataset"
           color="blue"
         />
       </div>
+
+      {operationNotice && <div role="status" className={`rounded-xl border p-3 text-xs ${operationError ? 'border-rose-800 bg-rose-950/60 text-rose-200' : 'border-emerald-800 bg-emerald-950/50 text-emerald-200'}`}>{operationNotice}</div>}
+      {!isAdmin && <div role="alert" className="rounded-xl border border-amber-800 bg-amber-950/40 p-3 text-xs text-amber-200">Sign in with an administrator account to view protected donor records and inventory metrics. Choosing the Admin view does not grant access.</div>}
 
       {/* Registered Donors List Visible to Record Manager / Admin */}
       <div className="p-5 rounded-2xl glass-panel border border-slate-800 space-y-4">
@@ -99,7 +144,7 @@ export default function AdminDashboard({ onNavigate, donorsList = [], onDeleteDo
             <p className="text-xs text-slate-400">Contains total donation counts, last donation timestamps, ML scores, and contact profiles</p>
           </div>
           <span className="px-2.5 py-1 rounded-lg text-xs bg-blood-950 text-blood-400 border border-blood-800 font-extrabold whitespace-nowrap">
-            {donorsList.length} SQL Donor Records
+            {visibleDonors.length} SQL Donor Records
           </span>
         </div>
 
@@ -152,41 +197,34 @@ export default function AdminDashboard({ onNavigate, donorsList = [], onDeleteDo
                   <td className="py-2.5 px-3">
                     <span className="px-2 py-0.5 rounded text-[11px] bg-slate-800 text-slate-200 font-bold flex items-center w-max space-x-1">
                       <Heart className="w-3 h-3 text-blood-400 fill-blood-400" />
-                      <span>{donor.total_donations !== undefined ? donor.total_donations : 4} Times</span>
+                      <span>{donor.total_donations == null ? 'Not recorded' : `${donor.total_donations} Times`}</span>
                     </span>
                   </td>
                   <td className="py-2.5 px-3 text-slate-300 font-semibold">
                     <span className="flex items-center space-x-1">
                       <Clock className="w-3 h-3 text-emerald-400" />
-                      <span>{donor.last_donation_date || donor.lastDonated || `${donor.last_donation_days || 150} days ago`}</span>
+                      <span>{donor.last_donation_date || (donor.last_donation_days != null ? `${donor.last_donation_days} days ago` : 'Not recorded')}</span>
                     </span>
                   </td>
                   <td className="py-2.5 px-3 text-slate-400">
-                    <div className="font-semibold text-slate-200">
-                      {[donor.taluk, donor.district].filter(Boolean).join(', ') || donor.location || 'Location not recorded'}
-                    </div>
-                    {donor.location && (donor.district || donor.taluk) && (
-                      <div className="mt-0.5 max-w-xs truncate text-[10px] text-slate-500" title={donor.location}>{donor.location}</div>
-                    )}
-                    <div className="mt-1 font-mono text-[10px] text-slate-300">{donor.phone || 'Phone not recorded'}</div>
-                    {donor.latitude != null && donor.longitude != null && (
-                      <div className="mt-0.5 text-[10px] text-emerald-400">Coordinates available</div>
-                    )}
+                    <div>{donor.location || [donor.district, donor.taluk].filter(Boolean).join(', ') || 'Location not recorded'}</div>
+                    <div className="font-mono text-slate-300 text-[10px]">{donor.phone || 'Phone unavailable'}</div>
                   </td>
                   <td className="py-2.5 px-3 text-slate-300 font-medium">
                     <span className="flex items-center space-x-1">
                       <Calendar className="w-3 h-3 text-amber-400" />
-                      <span>{donor.preferred_time || 'Morning'}</span>
+                      <span>{donor.preferred_time || 'Not recorded'}</span>
                     </span>
                   </td>
                   <td className="py-2.5 px-3">
-                    <MLPredictionBadge category={donor.availability_status || donor.category || 'HIGH'} score={donor.availability_score || donor.availabilityScore || 94.5} />
+                    {donor.availability_score == null ? <span className="text-slate-500">Not scored</span> : <MLPredictionBadge category={donor.availability_status || donor.category || (Number(donor.availability_score) >= 75 ? 'HIGH' : Number(donor.availability_score) >= 40 ? 'MEDIUM' : 'LOW')} score={Number(donor.availability_score)} />}
                   </td>
                   <td className="py-2.5 px-3">
                     <button
-                      onClick={() => onDeleteDonor && onDeleteDonor(donor.id || donor.donor_id)}
+                      onClick={() => handleDelete(donor)}
                       title="Delete Donor Record from SQL Database"
-                      className="p-1.5 rounded-lg bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800 transition-colors flex items-center space-x-1"
+                      disabled={!isAdmin}
+                      className="p-1.5 rounded-lg bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800 transition-colors flex items-center space-x-1 disabled:opacity-40"
                     >
                       <Trash2 className="w-3.5 h-3.5 text-rose-400" />
                       <span className="text-[10px]">Delete</span>

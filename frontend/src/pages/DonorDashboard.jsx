@@ -1,20 +1,23 @@
 import React, { useState, useEffect } from 'react';
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
 import StatCard from '../components/StatCard';
 import MLPredictionBadge from '../components/MLPredictionBadge';
-import LocationFields from '../components/LocationFields';
-import { 
-  Heart, CalendarCheck, Clock, Award, Bell, ShieldCheck, 
-  AlertCircle, PhoneCall, Building2, Send, CheckCircle, LogOut, 
-  UserPlus, LogIn, Mail, Phone, MapPin, Droplet, RefreshCw, 
-  User, CheckCircle2, XCircle, Calendar, ShieldAlert 
+import { getNextUpcomingAppointment } from '../utils/appointments';
+import {
+  Heart, CalendarCheck, Clock, Award, Bell, ShieldCheck,
+  AlertCircle, PhoneCall, Building2, Send, CheckCircle, LogOut,
+  UserPlus, LogIn, Mail, Phone, MapPin, Droplet, RefreshCw,
+  User, CheckCircle2, XCircle, Calendar, ShieldAlert
 } from 'lucide-react';
 
-export default function DonorDashboard({ 
-  currentUser, 
-  requestsList = [], 
-  onAuthSuccess, 
+export default function DonorDashboard({
+  currentUser,
+  requestsList = [],
+  onAuthSuccess,
   onLogout,
   onUserUpdate,
+  onRefreshRequests,
   activeSubTab = 'donor_dashboard'
 }) {
   const isLoggedIn = currentUser && currentUser.isLoggedIn;
@@ -33,8 +36,7 @@ export default function DonorDashboard({
     location: '',
     district: '',
     taluk: '',
-    latitude: null,
-    longitude: null,
+    consent_to_emergency_alerts: false,
     preferred_time: 'Morning'
   });
 
@@ -50,75 +52,107 @@ export default function DonorDashboard({
   // Resend Verification State
   const [resendCooldown, setResendCooldown] = useState(0);
   const [resendStatus, setResendStatus] = useState('');
+  const [resendStatusError, setResendStatusError] = useState(false);
 
-  // Donor Profile Data
+  // Profile values start empty and are replaced only with a real backend response.
   const [donorDetails, setDonorDetails] = useState({
-    name: currentUser?.name || 'Registered Donor',
+    name: currentUser?.name || '',
     email: currentUser?.email || '',
-    phone: currentUser?.phone || '+1-555-0199',
-    age: currentUser?.age || 28,
-    gender: currentUser?.gender || 'Male',
-    blood_group: currentUser?.blood_group || currentUser?.blood || 'O+',
+    phone: currentUser?.phone || '',
+    age: currentUser?.age ?? null,
+    gender: currentUser?.gender || '',
+    blood_group: currentUser?.blood_group || currentUser?.blood || '',
     location: currentUser?.location || '',
     district: currentUser?.district || '',
     taluk: currentUser?.taluk || '',
-    latitude: currentUser?.latitude ?? null,
-    longitude: currentUser?.longitude ?? null,
-    preferred_time: currentUser?.preferred_time || 'Morning',
-    is_available: currentUser?.is_available !== undefined ? currentUser?.is_available : true,
-    total_donations: currentUser?.total_donations || 3,
-    last_donation_days: currentUser?.last_donation_days || 150,
-    last_donation_date: currentUser?.last_donation_date || '2026-03-15',
-    availability_score: currentUser?.availability_score || 94.5,
-    availability_status: currentUser?.availability_status || 'HIGH'
+    preferred_time: currentUser?.preferred_time || '',
+    is_available: currentUser?.is_available ?? false,
+    total_donations: null,
+    last_donation_days: null,
+    last_donation_date: null,
+    availability_score: null,
+    availability_status: null
   });
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileLoadError, setProfileLoadError] = useState('');
+  const [locations, setLocations] = useState({ districts: [], taluks_by_district: {} });
 
   // Edit Profile Form State
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [profileForm, setProfileForm] = useState({ ...donorDetails });
   const [profileMsg, setProfileMsg] = useState('');
 
-  // Appointments State
-  const [appointments, setAppointments] = useState([
-    { id: 1, date: '2026-10-25', time_slot: 'Morning (8 AM - 12 PM)', center_name: 'Central Blood Bank Hub #1', status: 'SCHEDULED' }
-  ]);
+  // Lists come from persisted API responses; no example appointment/donation is injected.
+  const [appointments, setAppointments] = useState([]);
   const [newAppDate, setNewAppDate] = useState('');
   const [newAppSlot, setNewAppSlot] = useState('Morning (8 AM - 12 PM)');
-  const [newAppCenter, setNewAppCenter] = useState('Central Blood Bank Hub #1');
+  const [newAppCenter, setNewAppCenter] = useState('');
   const [appMsg, setAppMsg] = useState('');
+  const [donationHistory, setDonationHistory] = useState([]);
 
-  // Past Donations History
-  const [donationHistory, setDonationHistory] = useState([
-    { id: 'DON-901', date: '2026-03-15', location: 'Central Blood Bank Hub #1', units: 1, blood: donorDetails.blood_group, status: 'Verified' },
-    { id: 'DON-812', date: '2025-10-18', location: 'City General Blood Center', units: 1, blood: donorDetails.blood_group, status: 'Verified' },
-    { id: 'DON-705', date: '2025-06-04', location: 'St. Jude Mobile Drive', units: 1, blood: donorDetails.blood_group, status: 'Verified' }
-  ]);
+  const [respondedAlerts, setRespondedAlerts] = useState({});
+  const [availabilityPrediction, setAvailabilityPrediction] = useState({ status: 'idle', data: null, message: '' });
+  const [appointmentError, setAppointmentError] = useState('');
+  const [requestActionBusy, setRequestActionBusy] = useState({});
+  const [requestActionMessages, setRequestActionMessages] = useState({});
+  const [requestActionNotice, setRequestActionNotice] = useState('');
 
-  const [respondedAlerts, setRespondedAlerts] = useState([]);
-
-  // Fetch full details if logged in
+  // Shared district/taluk catalog used by registration.
   useEffect(() => {
-    if (isLoggedIn && currentUser?.token) {
-      fetch('http://localhost:8080/api/v1/donors/me', {
-        headers: { 'Authorization': `Bearer ${currentUser.token}` }
+    let cancelled = false;
+    fetch(`${API_BASE}/api/v1/locations`)
+      .then(async (response) => {
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || 'Location catalogue is unavailable.');
+        return data;
       })
-      .then(res => res.json())
-      .then(data => {
-        if (data && data.donor) {
-          setDonorDetails(prev => ({
-            ...prev,
-            ...data.donor,
-            ...data.stats,
-            is_available: data.stats ? data.stats.is_available : prev.is_available
-          }));
-          setProfileForm(prev => ({ ...prev, ...data.donor }));
-          if (data.donations && data.donations.length > 0) setDonationHistory(data.donations);
-          if (data.appointments && data.appointments.length > 0) setAppointments(data.appointments);
-        }
-      })
+      .then((data) => { if (!cancelled) setLocations(data); })
       .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  // Fetch the authenticated donor's own profile. Failure is surfaced instead of displaying defaults.
+  useEffect(() => {
+    let cancelled = false;
+    if (!(isLoggedIn && currentUser?.token)) {
+      setDonorDetails({ name: '', email: '', phone: '', age: null, gender: '', blood_group: '', location: '', district: '', taluk: '', preferred_time: '', is_available: false, total_donations: null, last_donation_days: null, last_donation_date: null, availability_score: null, availability_status: null });
+      setAppointments([]);
+      setDonationHistory([]);
+      setAvailabilityPrediction({ status: 'idle', data: null, message: '' });
+      setAppointmentError('');
+      setProfileLoadError('');
+      return () => { cancelled = true; };
     }
-  }, [isLoggedIn, currentUser]);
+    setProfileLoading(true);
+    setProfileLoadError('');
+    setAppointments([]);
+    setDonationHistory([]);
+    setAppointmentError('');
+    fetch(`${API_BASE}/api/v1/donors/me`, { headers: { Authorization: `Bearer ${currentUser.token}` } })
+      .then(async (response) => {
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || `Profile request failed (HTTP ${response.status}).`);
+        if (!data?.donor) throw new Error('The API did not return a donor profile for this account.');
+        return data;
+      })
+      .then((data) => {
+        if (cancelled) return;
+        const details = { ...data.donor, ...(data.stats || {}), ...(data.user || {}), is_available: data.stats?.is_available ?? Boolean(data.donor.is_available) };
+        setDonorDetails(details);
+        setProfileForm(details);
+        setDonationHistory(Array.isArray(data.donations) ? data.donations : []);
+        setAppointments((Array.isArray(data.appointments) ? data.appointments : []).slice().sort((a, b) => { const active = (v) => ['SCHEDULED', 'PENDING'].includes(String(v.status || '').toUpperCase()) ? 0 : 1; return active(a) - active(b) || String(a.appointment_date || a.date || '').localeCompare(String(b.appointment_date || b.date || '')); }));
+        setAppointmentError('');
+        setAvailabilityPrediction({ status: 'loading', data: null, message: '' });
+        fetch(`${API_BASE}/api/v1/donors/me/availability-score`, { headers: { Authorization: `Bearer ${currentUser.token}` } })
+          .then(async (response) => { const result = await response.json().catch(() => ({})); if (!response.ok) throw new Error(result.detail || 'Availability prediction is unavailable.'); return result; })
+          .then((result) => { if (cancelled) return; setAvailabilityPrediction(result.eligible ? { status: 'success', data: result, message: '' } : { status: 'ineligible', data: result, message: result.completed_donations == null ? (result.message || 'Verified donation history is not recorded yet.') : `${result.message || 'Your personalized availability score is not available yet.'} (${result.completed_donations} verified completed donations recorded.)` }); })
+          .catch((error) => { if (!cancelled) setAvailabilityPrediction({ status: 'error', data: null, message: error.message || 'Availability prediction is currently unavailable.' }); });
+      })
+      .catch((error) => { if (!cancelled) { setProfileLoadError(error.message || 'Unable to retrieve your profile.'); setAppointmentError(error.message || 'Unable to retrieve appointments.'); setAvailabilityPrediction({ status: 'error', data: null, message: 'Donor information could not be verified for an availability prediction.' }); } })
+      .finally(() => { if (!cancelled) setProfileLoading(false); });
+    return () => { cancelled = true; };
+  }, [isLoggedIn, currentUser?.token, currentUser?.id]);
 
   // Resend cooldown timer countdown
   useEffect(() => {
@@ -130,120 +164,98 @@ export default function DonorDashboard({
 
   // Eligibility calculation: Male = 90 days, Female = 120 days
   const requiredGap = (donorDetails.gender || 'Male').toLowerCase() === 'female' ? 120 : 90;
-  const daysSinceLast = donorDetails.last_donation_days || 150;
-  const isEligible = daysSinceLast >= requiredGap;
-  const daysRemaining = Math.max(0, requiredGap - daysSinceLast);
-  
+  const daysSinceLast = donorDetails.last_donation_days == null ? null : Number(donorDetails.last_donation_days);
+  const hasDonationInterval = Number.isFinite(daysSinceLast);
+  const isEligible = hasDonationInterval && daysSinceLast >= requiredGap;
+  const daysRemaining = hasDonationInterval ? Math.max(0, requiredGap - daysSinceLast) : null;
+
+  const nextAppointment = getNextUpcomingAppointment(appointments);
+
   // Next eligible date calculation
   const nextEligibleDate = new Date();
-  if (!isEligible) {
-    nextEligibleDate.setDate(nextEligibleDate.getDate() + daysRemaining);
-  }
+  if (!isEligible && daysRemaining !== null) nextEligibleDate.setDate(nextEligibleDate.getDate() + daysRemaining);
 
-  // Handle Availability Toggle
+  // Toggle availability only after the backend confirms persistence.
   const handleToggleAvailability = async () => {
+    if (!currentUser?.token) return;
     const nextVal = !donorDetails.is_available;
-    setDonorDetails(prev => ({ ...prev, is_available: nextVal }));
-
-    if (currentUser?.token) {
-      try {
-        await fetch('http://localhost:8080/api/v1/donors/me/availability', {
-          method: 'PUT',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${currentUser.token}`
-          },
-          body: JSON.stringify({ is_available: nextVal })
-        });
-      } catch (e) {}
+    setProfileMsg('');
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/donors/me/availability`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${currentUser.token}` },
+        body: JSON.stringify({ is_available: nextVal })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `Availability update failed (HTTP ${response.status}).`);
+      setDonorDetails((previous) => ({ ...previous, is_available: Boolean(data.is_available) }));
+      setProfileMsg(data.message || 'Availability setting was saved.');
+    } catch (error) {
+      setProfileMsg(error.message || 'Availability could not be saved.');
     }
   };
 
-  // Handle Profile Update
+  // Profile edits are accepted only after a successful backend response.
   const handleProfileSubmit = async (e) => {
     e.preventDefault();
     setProfileMsg('');
-
+    if (!currentUser?.token) { setProfileMsg('Sign in again before editing your profile.'); return; }
     try {
-      if (currentUser?.token) {
-        const response = await fetch('http://localhost:8080/api/v1/donors/me/profile', {
-          method: 'PUT',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${currentUser.token}`
-          },
-          body: JSON.stringify(profileForm)
-        });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.detail || 'Profile update failed.');
-      }
-      setDonorDetails(prev => ({ ...prev, ...profileForm }));
+      const response = await fetch(`${API_BASE}/api/v1/donors/me/profile`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${currentUser.token}` },
+        body: JSON.stringify(profileForm)
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `Profile update failed (HTTP ${response.status}).`);
+      const refreshed = { ...donorDetails, ...(data.donor || profileForm) };
+      setDonorDetails(refreshed);
+      setProfileForm(refreshed);
       setIsEditingProfile(false);
-      setProfileMsg('Profile updated successfully!');
-      setTimeout(() => setProfileMsg(''), 4000);
-    } catch (e) {
-      setProfileMsg(e.message || 'Could not save profile changes.');
+      setProfileMsg(data.message || 'Profile updated successfully.');
+      if (onUserUpdate) onUserUpdate({ ...currentUser, ...refreshed });
+    } catch (error) {
+      setProfileMsg(error.message || 'Profile update failed.');
     }
   };
 
-  // Handle Appointment Booking
+  // Appointment booking uses the authenticated donor identity on the backend.
   const handleBookAppointment = async (e) => {
     e.preventDefault();
     setAppMsg('');
-
-    if (!isVerified) {
-      setAppMsg('Please verify your email address to unlock appointment booking.');
-      return;
-    }
-    if (!newAppDate) {
-      setAppMsg('Please select an appointment date.');
-      return;
-    }
-
-    const appObj = {
-      id: appointments.length + 1,
-      date: newAppDate,
-      time_slot: newAppSlot,
-      center_name: newAppCenter,
-      status: 'SCHEDULED'
-    };
-
+    if (!isVerified) { setAppMsg('Please verify your email address to unlock appointment booking.'); return; }
+    if (!newAppDate) { setAppMsg('Please select an appointment date.'); return; }
+    if (!currentUser?.token) { setAppMsg('Please sign in before booking an appointment.'); return; }
     try {
-      if (currentUser?.token) {
-        await fetch('http://localhost:8080/api/v1/appointments', {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${currentUser.token}`
-          },
-          body: JSON.stringify({
-            donor_id: donorDetails.donor_id || donorDetails.id,
-            donor_name: donorDetails.name,
-            donor_email: donorDetails.email,
-            blood_group: donorDetails.blood_group,
-            appointment_date: newAppDate,
-            time_slot: newAppSlot,
-            center_name: newAppCenter
-          })
-        });
+      const response = await fetch(`${API_BASE}/api/v1/appointments`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${currentUser.token}` },
+        body: JSON.stringify({ appointment_date: newAppDate, time_slot: newAppSlot, center_name: newAppCenter || 'Central Blood Bank Hub #1' })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `Appointment booking failed (HTTP ${response.status}).`);
+      setAppMsg(data.message || 'Appointment saved successfully.');
+      setNewAppDate('');
+      setAppointmentError('');
+      try {
+        const profileResponse = await fetch(`${API_BASE}/api/v1/donors/me`, { headers: { Authorization: `Bearer ${currentUser.token}` } });
+        const profileData = await profileResponse.json().catch(() => ({}));
+        if (!profileResponse.ok) throw new Error(profileData.detail || 'Appointment list refresh failed.');
+        setAppointments((Array.isArray(profileData.appointments) ? profileData.appointments : []).slice().sort((a, b) => { const active = (v) => ['SCHEDULED', 'PENDING'].includes(String(v.status || '').toUpperCase()) ? 0 : 1; return active(a) - active(b) || String(a.appointment_date || a.date || '').localeCompare(String(b.appointment_date || b.date || '')); }));
+        setAppointmentError('');
+      } catch {
+        setAppointmentError('Your appointment was saved, but the list could not be refreshed. Reload the dashboard to view it.');
       }
-      setAppointments([appObj, ...appointments]);
-      setAppMsg('Appointment booked successfully!');
-      setNewAppDate('');
-    } catch (e) {
-      setAppointments([appObj, ...appointments]);
-      setAppMsg('Appointment scheduled.');
-      setNewAppDate('');
-    }
+    } catch (error) { setAppMsg(error.message || 'Appointment could not be saved.'); }
   };
 
   // Handle Resend Verification Email
   const handleResendEmail = async () => {
     if (resendCooldown > 0) return;
-    setResendStatus('Sending verification email...');
+    setResendStatus('Requesting verification email…');
+    setResendStatusError(false);
 
     try {
-      const res = await fetch('http://localhost:8080/api/v1/auth/resend-verification', {
+      const res = await fetch(`${API_BASE}/api/v1/auth/resend-verification`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: donorDetails.email })
@@ -251,13 +263,15 @@ export default function DonorDashboard({
       const data = await res.json();
       if (res.ok) {
         setResendCooldown(60);
-        setResendStatus(`Verification email sent to ${donorDetails.email}. Check your inbox and spam folder.`);
+        setResendStatus(data.message || (data.delivery?.delivery_status === 'DELIVERED' ? 'Verification email delivered.' : 'Verification email delivery was not confirmed.'));
+        setResendStatusError(!data.success);
       } else {
         setResendStatus(data.detail || 'Could not send verification email right now.');
+        setResendStatusError(true);
       }
     } catch (e) {
-      setResendStatus(`Verification email link generated. (Backend SMTP active)`);
-      setResendCooldown(60);
+      setResendStatus('Could not reach the backend. Verification email delivery was not confirmed.');
+      setResendStatusError(true);
     }
   };
 
@@ -265,11 +279,65 @@ export default function DonorDashboard({
   const emergencyRequestsForGroup = requestsList.filter(
     r => (r.blood_group || r.blood) === donorDetails.blood_group
   );
+  const quickEmergencyRequest = emergencyRequestsForGroup[0] || null;
+  const quickEmergencyRequestId = quickEmergencyRequest?.id ?? quickEmergencyRequest?._id;
+  const quickHasRequestId = quickEmergencyRequestId !== undefined
+    && quickEmergencyRequestId !== null && String(quickEmergencyRequestId).trim() !== '';
+  const quickEmergencyResponse = quickEmergencyRequest?.donor_response || respondedAlerts[quickEmergencyRequestId];
 
   const hospitalsList = [
     { name: 'City General Hospital (Emergency Cell)', phone: '+1-800-555-0101', address: '100 Healthcare Blvd, Suite 400', contactPerson: 'Dr. Alice Smith' },
     { name: 'St. Jude Emergency Center (Trauma Desk)', phone: '+1-800-555-0102', address: '450 Trauma Way, East Wing', contactPerson: 'Dr. Mark Johnson' }
   ];
+
+  const handleEmergencyResponse = async (requestId, action) => {
+    if (!requestId || !currentUser?.token || !isVerified || requestActionBusy[requestId]
+      || respondedAlerts[requestId]) return;
+    setRequestActionBusy((previous) => ({ ...previous, [requestId]: true }));
+    setRequestActionMessages((previous) => ({ ...previous, [requestId]: '' }));
+    setRequestActionNotice('');
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/requests/${requestId}/response`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${currentUser.token}` },
+        body: JSON.stringify({ action })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const error = new Error(data.detail || `Could not ${action.toLowerCase()} this request.`);
+        error.status = response.status;
+        throw error;
+      }
+      const confirmedResponse = String(data.response || '').trim().toUpperCase();
+      if (data.success !== true || !['ACCEPTED', 'REJECTED'].includes(confirmedResponse)) {
+        throw new Error('The backend did not confirm the emergency response. Refresh the request list and try again.');
+      }
+      setRespondedAlerts((previous) => ({ ...previous, [requestId]: confirmedResponse }));
+      setRequestActionMessages((previous) => ({ ...previous, [requestId]: data.message || `Your ${action.toLowerCase()} response was recorded.` }));
+      // The API response is authoritative; refresh so persisted per-donor state is reloaded.
+      if (onRefreshRequests) {
+        try {
+          await onRefreshRequests();
+        } catch {
+          setRequestActionNotice('Your response was saved, but the request list could not be refreshed. Reload the Donor Page to confirm the latest state.');
+        }
+      }
+    } catch (error) {
+      setRequestActionMessages((previous) => ({ ...previous, [requestId]: error.message || 'Your response could not be saved. Refresh the request list and try again.' }));
+      // A 409 can mean the request changed or a response already exists. Reload server state.
+      let requestsRefreshed = false;
+      if (onRefreshRequests) {
+        try { await onRefreshRequests(); requestsRefreshed = true; } catch { /* Keep the original action error visible. */ }
+      }
+      if (error.status === 409) {
+        setRequestActionNotice(requestsRefreshed
+          ? 'This request changed or a response was already recorded. The emergency request list has been refreshed.'
+          : 'This request changed or a response was already recorded, but the request list could not be refreshed. Reload the Donor Page.');
+      }
+    } finally {
+      setRequestActionBusy((previous) => ({ ...previous, [requestId]: false }));
+    }
+  };
 
   // Auth Submit Handlers
   const handleRegisterSubmit = async (e) => {
@@ -279,7 +347,7 @@ export default function DonorDashboard({
     setAuthError('');
 
     try {
-      const res = await fetch('http://localhost:8080/api/v1/auth/register', {
+      const res = await fetch(`${API_BASE}/api/v1/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData)
@@ -292,25 +360,22 @@ export default function DonorDashboard({
         return;
       }
 
-      setAuthMessage(`Verification email sent to ${formData.email}. Check your inbox and spam folder.`);
-      
+      const mailStatus = data.email_delivery?.delivery_status || 'UNKNOWN';
+      setAuthMessage(mailStatus === 'DELIVERED' ? `Verification email was delivered to ${formData.email}.` : `Registration saved. Verification email status: ${mailStatus}. Configure SMTP to deliver verification emails.`);
+
       const sessionUser = {
-        id: data.donor_id || data.user?.donor_id,
+        id: data.user?.id || data.donor?.user_id || data.user?.donor_id,
         name: formData.name,
         email: formData.email,
         phone: formData.phone,
         blood: formData.blood_group,
         blood_group: formData.blood_group,
-        location: formData.location.trim() || [formData.taluk, formData.district].filter(Boolean).join(', '),
-        district: formData.district,
-        taluk: formData.taluk,
-        latitude: formData.latitude,
-        longitude: formData.longitude,
+        location: formData.location,
         preferred_time: formData.preferred_time,
         age: formData.age,
         gender: formData.gender,
         role: 'DONOR',
-        is_verified: false,
+        is_verified: Boolean(data.user?.is_verified),
         isLoggedIn: true,
         token: data.token
       };
@@ -332,7 +397,7 @@ export default function DonorDashboard({
     setAuthError('');
 
     try {
-      const res = await fetch('http://localhost:8080/api/v1/auth/login', {
+      const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(loginData)
@@ -468,7 +533,7 @@ export default function DonorDashboard({
                   <input
                     type="tel"
                     required
-                    placeholder="+1-555-0199"
+                    placeholder="+91 98765 43210"
                     value={formData.phone}
                     onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
                     className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-none focus:border-blood-500"
@@ -515,20 +580,53 @@ export default function DonorDashboard({
                 </div>
               </div>
 
-              <LocationFields value={formData} onChange={setFormData} requiredLocation showCoordinates />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="text-slate-300 font-semibold mb-1 block">Locality / Nearby Area *</label>
+                  <input
+                    type="text"
+                    required
+                    minLength={2}
+                    maxLength={160}
+                    placeholder="e.g. Anekal town — not a precise home address"
+                    value={formData.location}
+                    onChange={(e) => setFormData({ ...formData, location: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-none"
+                  />
+                </div>
 
-              <div>
-                <label className="text-slate-300 font-semibold mb-1 block">Preferred Donation Time</label>
-                <select
-                  value={formData.preferred_time}
-                  onChange={(e) => setFormData({ ...formData, preferred_time: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-none"
-                >
-                  <option value="Morning">Morning (8 AM - 12 PM)</option>
-                  <option value="Afternoon">Afternoon (12 PM - 4 PM)</option>
-                  <option value="Evening">Evening (4 PM - 8 PM)</option>
-                </select>
+                <div>
+                  <label className="text-slate-300 font-semibold mb-1 block">Preferred Donation Time</label>
+                  <select
+                    value={formData.preferred_time}
+                    onChange={(e) => setFormData({ ...formData, preferred_time: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-none"
+                  >
+                    <option value="Morning">Morning (8 AM - 12 PM)</option>
+                    <option value="Afternoon">Afternoon (12 PM - 4 PM)</option>
+                    <option value="Evening">Evening (4 PM - 8 PM)</option>
+                  </select>
+                </div>
               </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="text-slate-300 font-semibold mb-1 block" htmlFor="donor-register-district">District</label>
+                  <select id="donor-register-district" value={formData.district} onChange={(event) => setFormData({ ...formData, district: event.target.value, taluk: '' })} className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white" required>
+                    <option value="">Select district</option>{locations.districts.map((district) => <option key={district} value={district}>{district}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-slate-300 font-semibold mb-1 block" htmlFor="donor-register-taluk">Taluk</label>
+                  <select id="donor-register-taluk" value={formData.taluk} disabled={!formData.district} onChange={(event) => setFormData({ ...formData, taluk: event.target.value })} className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white disabled:opacity-50" required>
+                    <option value="">Select taluk</option>{(locations.taluks_by_district?.[formData.district] || []).map((taluk) => <option key={taluk} value={taluk}>{taluk}</option>)}
+                  </select>
+                </div>
+              </div>
+              <label className="flex items-start gap-2 text-xs text-slate-300">
+                <input type="checkbox" checked={formData.consent_to_emergency_alerts} onChange={(event) => setFormData({ ...formData, consent_to_emergency_alerts: event.target.checked })} className="mt-0.5 accent-red-600" />
+                <span>I consent to receiving emergency blood donation email alerts. This is optional and can be withheld.</span>
+              </label>
 
               <button
                 type="submit"
@@ -536,7 +634,7 @@ export default function DonorDashboard({
                 className="w-full py-3 rounded-xl bg-gradient-to-r from-blood-600 to-blood-700 hover:from-blood-500 hover:to-blood-600 text-white font-extrabold text-xs shadow-lg glow-red transition-all flex items-center justify-center space-x-2 mt-4"
               >
                 <UserPlus className="w-4 h-4" />
-                <span>{isSubmitting ? 'Registering & Dispatching Verification Email...' : 'Register & Enter Dashboard'}</span>
+                <span>{isSubmitting ? 'Creating donor account…' : 'Register & Enter Dashboard'}</span>
               </button>
             </form>
           )}
@@ -589,6 +687,8 @@ export default function DonorDashboard({
   // ==========================================
   return (
     <div className="space-y-6">
+      {profileLoading && <div role="status" className="p-3 rounded-xl bg-slate-900 border border-slate-700 text-slate-300 text-xs">Loading your persisted donor profile…</div>}
+      {profileLoadError && <div role="alert" className="p-3 rounded-xl bg-rose-950/60 border border-rose-800 text-rose-200 text-xs">{profileLoadError}</div>}
 
       {/* PENDING EMAIL VERIFICATION BANNER */}
       {!isVerified && (
@@ -598,10 +698,10 @@ export default function DonorDashboard({
             <div>
               <p className="text-xs font-bold text-amber-100">Please verify your email to unlock all features.</p>
               <p className="text-[11px] text-amber-300">
-                A verification link was sent to <strong className="text-white">{donorDetails.email}</strong>. Booking appointments and hospital emergency responses remain restricted until verified.
+                Verification status for <strong className="text-white">{donorDetails.email}</strong> is pending. Appointment booking remains restricted until verified.
               </p>
               {resendStatus && (
-                <p className="text-[10px] text-emerald-400 mt-1 font-semibold">{resendStatus}</p>
+                <p role="status" className={`text-[10px] mt-1 font-semibold ${resendStatusError ? 'text-amber-300' : 'text-emerald-400'}`}>{resendStatus}</p>
               )}
             </div>
           </div>
@@ -631,7 +731,7 @@ export default function DonorDashboard({
             <div className="flex items-center space-x-2">
               <h2 className="text-2xl font-black text-white">{donorDetails.name}</h2>
               <span className="px-2 py-0.5 rounded text-xs bg-slate-800 text-blood-400 font-mono font-bold">
-                {donorDetails.donor_id || donorDetails.id || 'DNR-1001'}
+                {donorDetails.donor_id || donorDetails.id || 'Donor ID unavailable'}
               </span>
 
               {/* VERIFICATION BADGE */}
@@ -652,7 +752,7 @@ export default function DonorDashboard({
               <span>&bull;</span>
               <span>{donorDetails.location}</span>
               <span>&bull;</span>
-              <span>Health Score: 98/100</span>
+              {donorDetails.health_score != null && <span>Health Score: {donorDetails.health_score}/100</span>}
             </p>
           </div>
         </div>
@@ -674,7 +774,7 @@ export default function DonorDashboard({
             </button>
           </div>
 
-          <MLPredictionBadge category={donorDetails.availability_status || 'HIGH'} score={donorDetails.availability_score || 94.5} />
+          {availabilityPrediction.status === 'success' ? <MLPredictionBadge category={availabilityPrediction.data.availability_status} score={availabilityPrediction.data.availability_score} /> : <span className="text-xs text-slate-400">{availabilityPrediction.status === 'loading' ? 'Calculating availability…' : availabilityPrediction.status === 'error' ? 'Availability score unavailable' : availabilityPrediction.status === 'ineligible' ? 'Personalized score not available yet' : 'Availability score not calculated'}</span>}
 
           {onLogout && (
             <button
@@ -692,33 +792,33 @@ export default function DonorDashboard({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           title="Last Donation Date"
-          value={donorDetails.last_donation_date || '2026-03-15'}
-          subtitle={`${daysSinceLast} days ago`}
+          value={donorDetails.last_donation_date || 'Not recorded'}
+          subtitle={daysSinceLast == null ? 'Donation interval not available' : `${daysSinceLast} days ago`}
           icon={Clock}
           color="blood"
         />
         <StatCard
           title="Total Blood Donations"
-          value={`${donorDetails.total_donations || 3} Times`}
-          subtitle="3 Lives saved per donation"
+          value={`${donorDetails.total_donations ?? donationHistory.length} Times`}
+          subtitle={donorDetails.total_donations == null ? "No verified donation total is recorded" : "Recorded donation total"}
           icon={Heart}
           color="emerald"
         />
         <StatCard
           title="Eligibility Status"
-          value={isEligible ? 'Eligible to Donate' : 'Resting Period'}
+          value={daysSinceLast == null ? 'Unknown' : isEligible ? 'Interval met' : 'Resting Period'}
           subtitle={
-            isEligible 
-              ? `${requiredGap}-day gap passed (${donorDetails.gender || 'Male'})` 
-              : `Next eligible in ${daysRemaining} days (${nextEligibleDate.toISOString().slice(0, 10)})`
+            isEligible
+              ? `${requiredGap}-day gap passed (${donorDetails.gender || 'Male'})`
+              : daysRemaining == null ? 'Donation history not recorded' : `Next eligible in ${daysRemaining} days (${nextEligibleDate.toISOString().slice(0, 10)})`
           }
           icon={CalendarCheck}
           color={isEligible ? 'emerald' : 'amber'}
         />
         <StatCard
           title="My Availability Score"
-          value={`${donorDetails.availability_score || 94.5}%`}
-          subtitle={`${donorDetails.availability_status || 'HIGH'} Availability Tier`}
+          value={availabilityPrediction.status === 'success' ? `${availabilityPrediction.data.availability_score}%` : '—'}
+          subtitle={availabilityPrediction.status === 'success' ? `${availabilityPrediction.data.availability_status} Availability Tier` : availabilityPrediction.message || (availabilityPrediction.status === 'loading' ? 'Requesting the ML service…' : 'Personalized score requires 3 verified completed donations')}
           icon={Award}
           color="blue"
         />
@@ -735,18 +835,22 @@ export default function DonorDashboard({
                 <span>My Next Scheduled Appointment</span>
               </h3>
             </div>
-            {appointments.length > 0 ? (
+            {profileLoading ? (
+              <p className="text-xs text-slate-500">Loading your appointments…</p>
+            ) : appointmentError ? (
+              <p className="text-xs text-rose-300" role="alert">{appointmentError}</p>
+            ) : nextAppointment ? (
               <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800 space-y-2 text-xs">
                 <div className="flex items-center justify-between">
-                  <span className="font-bold text-white text-sm">{appointments[0].date}</span>
+                  <span className="font-bold text-white text-sm">{nextAppointment.appointment_date || nextAppointment.date}</span>
                   <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 font-semibold">
-                    {appointments[0].status}
+                    {nextAppointment.status}
                   </span>
                 </div>
-                <p className="text-slate-400">{appointments[0].time_slot} &bull; {appointments[0].center_name}</p>
+                <p className="text-slate-400">{nextAppointment.time_slot || 'Time not recorded'} &bull; {nextAppointment.center_name || 'Donation center not recorded'}</p>
               </div>
             ) : (
-              <p className="text-xs text-slate-500">No scheduled appointments. Use the Appointments tab to book.</p>
+              <p className="text-xs text-slate-500">You have no upcoming scheduled appointments.</p>
             )}
           </div>
 
@@ -761,15 +865,29 @@ export default function DonorDashboard({
                 {emergencyRequestsForGroup.length} Live
               </span>
             </div>
-            {emergencyRequestsForGroup.length > 0 ? (
+            {quickEmergencyRequest ? (
               <div className="p-3.5 rounded-xl bg-blood-950/40 border border-blood-800/80 space-y-2 text-xs">
                 <div className="flex items-center justify-between font-bold text-white">
-                  <span>{emergencyRequestsForGroup[0].hospital_name || emergencyRequestsForGroup[0].hospital}</span>
-                  <span className="text-blood-400 font-mono">{emergencyRequestsForGroup[0].urgency_level || emergencyRequestsForGroup[0].urgency}</span>
+                  <span>{quickEmergencyRequest.hospital_name || quickEmergencyRequest.hospital}</span>
+                  <span className="text-blood-400 font-mono">{quickEmergencyRequest.urgency_level || quickEmergencyRequest.urgency}</span>
                 </div>
                 <p className="text-slate-300">
-                  Needs {emergencyRequestsForGroup[0].units_needed || emergencyRequestsForGroup[0].units} units of {donorDetails.blood_group}.
+                  Needs {quickEmergencyRequest.units_needed || quickEmergencyRequest.units} units of {donorDetails.blood_group}.
                 </p>
+                {requestActionNotice && <p className="text-xs text-amber-300" role="status">{requestActionNotice}</p>}
+                {requestActionMessages[quickEmergencyRequestId] && <p className="text-xs text-slate-300" role="status">{requestActionMessages[quickEmergencyRequestId]}</p>}
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  {quickEmergencyResponse ? (
+                    <span className={`px-2 py-1 rounded-lg text-[10px] font-bold border ${quickEmergencyResponse === 'ACCEPTED' ? 'bg-emerald-950 text-emerald-300 border-emerald-800' : 'bg-slate-900 text-slate-300 border-slate-700'}`}>Response: {quickEmergencyResponse}</span>
+                  ) : (
+                    <>
+                      <button onClick={() => handleEmergencyResponse(quickEmergencyRequestId, 'ACCEPT')} disabled={!quickHasRequestId || !isVerified || Boolean(requestActionBusy[quickEmergencyRequestId])} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-700 hover:bg-emerald-600 text-white disabled:opacity-50">{requestActionBusy[quickEmergencyRequestId] ? 'Saving…' : 'Accept'}</button>
+                      <button onClick={() => handleEmergencyResponse(quickEmergencyRequestId, 'REJECT')} disabled={!quickHasRequestId || !isVerified || Boolean(requestActionBusy[quickEmergencyRequestId])} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 disabled:opacity-50">Reject</button>
+                      {!isVerified && <span className="text-xs text-amber-300">Verify email to respond</span>}
+                      {!quickHasRequestId && <span className="text-xs text-amber-300">Request ID unavailable; actions disabled</span>}
+                    </>
+                  )}
+                </div>
               </div>
             ) : (
               <p className="text-xs text-slate-500">No emergency blood requests matching your group right now.</p>
@@ -823,24 +941,16 @@ export default function DonorDashboard({
               </div>
               <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 space-y-1">
                 <span className="text-slate-500 font-semibold block">Age & Gender</span>
-                <span className="text-white font-bold text-sm">{donorDetails.age} years &bull; {donorDetails.gender || 'Male'}</span>
+                <span className="text-white font-bold text-sm">{donorDetails.age ?? 'Age not recorded'}{donorDetails.age == null ? '' : ' years'} &bull; {donorDetails.gender || 'Gender not recorded'}</span>
               </div>
               <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 space-y-1">
-                <span className="text-slate-500 font-semibold block">District & Taluk</span>
-                <span className="text-white font-bold text-sm">
-                  {donorDetails.district && donorDetails.taluk
-                    ? `${donorDetails.taluk}, ${donorDetails.district}`
-                    : donorDetails.location
-                      ? `Legacy location — not mapped: ${donorDetails.location}`
-                      : 'Location not recorded'}
-                </span>
-                {!(donorDetails.district && donorDetails.taluk) && (
-                  <span className="block pt-1 text-[11px] text-amber-300">Edit your profile to select a district and taluk. Legacy labels are never converted automatically.</span>
-                )}
+                <span className="text-slate-500 font-semibold block">Locality / Nearby Area</span>
+                <span className="text-white font-bold text-sm">{donorDetails.location || 'Not recorded'}</span>
+                <span className="text-slate-400 block">{[donorDetails.district, donorDetails.taluk].filter(Boolean).join(', ')}</span>
               </div>
               <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 space-y-1 md:col-span-2">
                 <span className="text-slate-500 font-semibold block">Preferred Donation Time</span>
-                <span className="text-white font-bold text-sm">{donorDetails.preferred_time || 'Morning'}</span>
+                <span className="text-white font-bold text-sm">{donorDetails.preferred_time || 'Not recorded'}</span>
               </div>
             </div>
           ) : (
@@ -903,19 +1013,30 @@ export default function DonorDashboard({
                 </div>
               </div>
 
-              <LocationFields value={profileForm} onChange={setProfileForm} showCoordinates />
-
-              <div>
-                <label className="text-slate-300 font-semibold mb-1 block">Preferred Donation Time</label>
-                <select
-                  value={profileForm.preferred_time || 'Morning'}
-                  onChange={(e) => setProfileForm({ ...profileForm, preferred_time: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
-                >
-                  <option value="Morning">Morning (8 AM - 12 PM)</option>
-                  <option value="Afternoon">Afternoon (12 PM - 4 PM)</option>
-                  <option value="Evening">Evening (4 PM - 8 PM)</option>
-                </select>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="text-slate-300 font-semibold mb-1 block">Locality / Nearby Area</label>
+                  <input
+                    type="text"
+                    maxLength={160}
+                    value={profileForm.location || ''}
+                    onChange={(e) => setProfileForm({ ...profileForm, location: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
+                    placeholder="Town or nearby area; avoid a precise home address"
+                  />
+                </div>
+                <div>
+                  <label className="text-slate-300 font-semibold mb-1 block">Preferred Donation Time</label>
+                  <select
+                    value={profileForm.preferred_time}
+                    onChange={(e) => setProfileForm({ ...profileForm, preferred_time: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
+                  >
+                    <option value="Morning">Morning (8 AM - 12 PM)</option>
+                    <option value="Afternoon">Afternoon (12 PM - 4 PM)</option>
+                    <option value="Evening">Evening (4 PM - 8 PM)</option>
+                  </select>
+                </div>
               </div>
 
               <button
@@ -990,8 +1111,8 @@ export default function DonorDashboard({
 
             {appMsg && (
               <div className={`p-3 rounded-xl text-xs font-bold text-center ${
-                appMsg.includes('verify') 
-                  ? 'bg-rose-950/80 border border-rose-800 text-rose-300' 
+                appMsg.includes('verify')
+                  ? 'bg-rose-950/80 border border-rose-800 text-rose-300'
                   : 'bg-emerald-950/80 border border-emerald-800 text-emerald-300'
               }`}>
                 {appMsg}
@@ -1055,12 +1176,16 @@ export default function DonorDashboard({
           <div className="p-5 rounded-2xl glass-panel border border-slate-800 space-y-4">
             <div className="pb-3 border-b border-slate-800 flex items-center justify-between">
               <h3 className="text-sm font-bold text-white">My Appointments List</h3>
-              <span className="text-xs text-slate-400">{appointments.length} Scheduled</span>
+              <span className="text-xs text-slate-400">{appointments.length} Appointments</span>
             </div>
 
             <div className="space-y-3">
-              {appointments.length === 0 ? (
-                <p className="text-xs text-slate-500">No appointments scheduled.</p>
+              {profileLoading ? (
+                <p className="text-xs text-slate-500">Loading your appointments…</p>
+              ) : appointmentError ? (
+                <p className="text-xs text-rose-300" role="alert">{appointmentError}</p>
+              ) : appointments.length === 0 ? (
+                <p className="text-xs text-slate-500">No appointments recorded.</p>
               ) : (
                 appointments.map((app, idx) => (
                   <div key={idx} className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-1.5 text-xs">
@@ -1096,6 +1221,8 @@ export default function DonorDashboard({
             </span>
           </div>
 
+          {requestActionNotice && <p className="text-xs text-amber-300" role="status">{requestActionNotice}</p>}
+
           <div className="space-y-3">
             {emergencyRequestsForGroup.length === 0 ? (
               <div className="p-6 text-center text-slate-500 text-xs">
@@ -1103,10 +1230,12 @@ export default function DonorDashboard({
               </div>
             ) : (
               emergencyRequestsForGroup.map((req, idx) => {
-                const reqId = req.id || req._id || idx + 1;
-                const isResponded = respondedAlerts.includes(reqId);
+                const reqId = req.id ?? req._id;
+                const hasRequestId = reqId !== undefined && reqId !== null && String(reqId).trim() !== '';
+                const savedResponse = req.donor_response || respondedAlerts[reqId];
+                const actionMessage = requestActionMessages[reqId];
                 return (
-                  <div key={reqId} className="p-4 rounded-xl bg-blood-950/30 border border-blood-800/80 space-y-2 text-xs">
+                  <div key={reqId ?? `${req.hospital_name || req.hospital || 'request'}-${idx}`} className="p-4 rounded-xl bg-blood-950/30 border border-blood-800/80 space-y-2 text-xs">
                     <div className="flex items-center justify-between font-bold text-white">
                       <span>{req.hospital_name || req.hospital}</span>
                       <span className="px-2 py-0.5 rounded text-[10px] bg-blood-950 text-blood-400 border border-blood-800">
@@ -1116,23 +1245,20 @@ export default function DonorDashboard({
                     <p className="text-slate-300">
                       Need: <strong className="text-blood-400">{req.units_needed || req.units} units</strong> of <strong className="text-white">{donorDetails.blood_group}</strong> for {req.patient_name || req.patient}.
                     </p>
-                    <div className="flex items-center justify-between pt-2">
-                      <span className="text-slate-500 text-[10px]">{req.request_date || 'Today'}</span>
-                      <button
-                        onClick={() => {
-                          if (!respondedAlerts.includes(reqId)) setRespondedAlerts([...respondedAlerts, reqId]);
-                        }}
-                        disabled={isResponded || !isVerified}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                          !isVerified
-                            ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
-                            : isResponded
-                            ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
-                            : 'bg-blood-600 hover:bg-blood-500 text-white shadow-md'
-                        }`}
-                      >
-                        {!isVerified ? 'Verify Email to Respond' : isResponded ? 'Response Recorded!' : 'Confirm Availability to Hospital'}
-                      </button>
+                    <p className="text-slate-400">{req.hospital_address || 'Hospital location not provided'}</p>
+                    {actionMessage && <p className={`text-xs ${savedResponse ? 'text-emerald-300' : 'text-rose-300'}`} role={savedResponse ? 'status' : 'alert'}>{actionMessage}</p>}
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+                      <span className="text-slate-500 text-[10px]">{req.request_date || 'Date not provided'}{savedResponse ? ` · ${savedResponse}` : ''}</span>
+                      {savedResponse ? (
+                        <span className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${savedResponse === 'ACCEPTED' ? 'bg-emerald-950 text-emerald-300 border-emerald-800' : 'bg-slate-900 text-slate-300 border-slate-700'}`}>Response: {savedResponse}</span>
+                      ) : (
+                        <div className="flex gap-2">
+                          <button onClick={() => handleEmergencyResponse(reqId, 'ACCEPT')} disabled={!hasRequestId || !isVerified || Boolean(requestActionBusy[reqId]) || Boolean(respondedAlerts[reqId])} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-700 hover:bg-emerald-600 text-white disabled:opacity-50">{requestActionBusy[reqId] ? 'Saving…' : 'Accept'}</button>
+                          <button onClick={() => handleEmergencyResponse(reqId, 'REJECT')} disabled={!hasRequestId || !isVerified || Boolean(requestActionBusy[reqId]) || Boolean(respondedAlerts[reqId])} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 disabled:opacity-50">Reject</button>
+                          {!isVerified && <span className="text-xs text-amber-300 self-center">Verify email to respond</span>}
+                          {!hasRequestId && <span className="text-xs text-amber-300 self-center">Request ID unavailable; actions disabled</span>}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );

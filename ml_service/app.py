@@ -12,12 +12,15 @@ app = FastAPI(
     version="1.0.0"
 )
 
+_cors_origins = [origin.strip() for origin in os.getenv(
+    "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+).split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -30,21 +33,22 @@ pipeline = None
 def load_model():
     global pipeline
     if not os.path.exists(MODEL_PATH):
-        raise RuntimeError(
-            "Required ML model artifact is missing. Automatic training is disabled so the service "
-            "cannot silently regenerate a model from the repository's synthetic dataset. Prepare and "
-            "review a legitimate, reproducible training dataset, then run the training pipeline explicitly."
-        )
-    # joblib deserializes Python objects. Only load a trusted project artifact in a controlled environment.
-    pipeline = joblib.load(MODEL_PATH)
-    print("ML Pipeline loaded successfully!")
+        pipeline = None
+        print(f"ML model artifact not found at {MODEL_PATH}. Inference disabled; no automatic training was started.")
+        return
+    try:
+        pipeline = joblib.load(MODEL_PATH)
+        print("ML Pipeline loaded successfully!")
+    except Exception as exc:
+        pipeline = None
+        print(f"ML model artifact could not be loaded ({type(exc).__name__}). Inference is disabled.")
 
 class DonorPredictRequest(BaseModel):
     donor_id: str = Field("DNR-1001", example="DNR-1001")
     age: int = Field(28, ge=18, le=65)
     gender: str = Field("Male", example="Male")
     blood_group: str = Field("O+", example="O+")
-    location: str = Field("", example="Sringeri, Chikkamagaluru", description="Free-form location label. The v1 training pipeline ignores location categories not seen in its legacy training set.")
+    location: str = Field("Zone A (Central)", example="Zone A (Central)")
     distance_km: float = Field(5.0, ge=0.0)
     last_donation_days: int = Field(120, ge=0)
     donation_frequency: int = Field(3, ge=0)
@@ -125,8 +129,9 @@ def predict_availability(request: DonorPredictRequest):
             recommendation=rec,
             model_used="Random Forest Classifier (v1.0)"
         )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Prediction error: {str(e)}")
+    except Exception as exc:
+        print(f"ML prediction error ({type(exc).__name__}): {exc}")
+        raise HTTPException(status_code=400, detail="The model could not process this scenario. Check the service logs and input compatibility.")
 
 if __name__ == '__main__':
     import uvicorn

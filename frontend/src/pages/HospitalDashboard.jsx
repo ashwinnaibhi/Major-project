@@ -1,25 +1,39 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import StatCard from '../components/StatCard';
 import MLPredictionBadge from '../components/MLPredictionBadge';
-import LocationFields from '../components/LocationFields';
-import { Plus, FileText, CheckCircle2, Clock, MapPin, AlertCircle, Building2 } from 'lucide-react';
+import { Plus, FileText, CheckCircle2, Clock, MapPin, AlertCircle, Building2, X } from 'lucide-react';
 
 export default function HospitalDashboard({ donorsList = [], requestsList = [], onRequestCreated }) {
   const [showReqModal, setShowReqModal] = useState(false);
   const [newRequest, setNewRequest] = useState({
-    hospital_name: 'City General Hospital',
-    hospital_address: '100 Healthcare Blvd, Suite 400',
-    contact_phone: '+1-800-555-0101',
+    hospital_name: '',
+    hospital_address: '',
+    contact_phone: '',
     blood_group: 'O-',
     units: 2,
     urgency: 'EMERGENCY',
-    patient: 'Emergency Trauma Ward #12',
-    district: '',
-    taluk: '',
-    latitude: null,
-    longitude: null
+    patient: '',
+    destination_latitude: '',
+    destination_longitude: ''
   });
   const [formError, setFormError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
+
+  const updateField = (field, value) => { setNewRequest((previous) => ({ ...previous, [field]: value })); setIsDirty(true); };
+  const resetRequestForm = () => { setNewRequest({ hospital_name: '', hospital_address: '', contact_phone: '', blood_group: 'O-', units: 2, urgency: 'EMERGENCY', patient: '', destination_latitude: '', destination_longitude: '' }); setIsDirty(false); };
+  const closeRequestModal = useCallback(() => {
+    if (isSubmitting) return;
+    if (isDirty && !window.confirm('Discard the unsaved blood request?')) return;
+    setShowReqModal(false); setFormError(''); setIsDirty(false);
+  }, [isDirty, isSubmitting]);
+
+  useEffect(() => {
+    if (!showReqModal) return undefined;
+    const onKeyDown = (event) => { if (event.key === 'Escape') closeRequestModal(); };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showReqModal, closeRequestModal]);
 
   const pendingCount = requestsList.filter(r => (r.status || 'PENDING') === 'PENDING').length;
   const fulfilledCount = requestsList.filter(r => r.status === 'APPROVED' || r.status === 'ALLOCATED').length;
@@ -28,63 +42,39 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
   const handleCreateRequest = async (e) => {
     e.preventDefault();
     setFormError('');
+    if (!newRequest.hospital_name.trim()) { setFormError('Hospital name is required.'); return; }
+    if (!newRequest.hospital_address.trim()) { setFormError('Hospital address is required.'); return; }
+    if (!Number.isInteger(Number(newRequest.units)) || Number(newRequest.units) <= 0 || Number(newRequest.units) > 1000) { setFormError('Units must be a whole number between 1 and 1,000.'); return; }
+    if (!newRequest.patient.trim()) { setFormError('Patient or ward reference is required.'); return; }
+    const hasLat = String(newRequest.destination_latitude).trim() !== '';
+    const hasLon = String(newRequest.destination_longitude).trim() !== '';
+    if (hasLat !== hasLon) { setFormError('Enter both destination latitude and longitude, or leave both blank.'); return; }
+    const latitude = hasLat ? Number(newRequest.destination_latitude) : null;
+    const longitude = hasLon ? Number(newRequest.destination_longitude) : null;
+    if (hasLat && (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180)) { setFormError('Enter valid coordinates (latitude −90 to 90, longitude −180 to 180).'); return; }
 
-    if (!newRequest.hospital_name.trim()) {
-      setFormError('Hospital Name is required.');
-      return;
-    }
-    if (!newRequest.hospital_address.trim()) {
-      setFormError('Hospital Address is required.');
-      return;
-    }
-    if (parseInt(newRequest.units) <= 0 || isNaN(parseInt(newRequest.units))) {
-      setFormError('Units required must be greater than 0.');
-      return;
-    }
-    if (!newRequest.patient.trim()) {
-      setFormError('Patient Name or Ward Details are required.');
-      return;
-    }
-
-    if ((newRequest.latitude === null || newRequest.latitude === '') !== (newRequest.longitude === null || newRequest.longitude === '')) {
-      setFormError('Enter both latitude and longitude, or leave both blank.');
-      return;
-    }
-    if (newRequest.latitude !== null && newRequest.latitude !== '' && (Number(newRequest.latitude) < -90 || Number(newRequest.latitude) > 90)) {
-      setFormError('Latitude must be between -90 and 90.');
-      return;
-    }
-    if (newRequest.longitude !== null && newRequest.longitude !== '' && (Number(newRequest.longitude) < -180 || Number(newRequest.longitude) > 180)) {
-      setFormError('Longitude must be between -180 and 180.');
-      return;
-    }
-
-    const reqObj = {
-      hospital_name: newRequest.hospital_name.trim(),
-      hospital: newRequest.hospital_name.trim(),
-      hospital_address: newRequest.hospital_address.trim(),
-      contact_phone: newRequest.contact_phone.trim(),
-      blood_group: newRequest.blood_group,
-      blood: newRequest.blood_group,
-      units_needed: parseInt(newRequest.units),
-      units: parseInt(newRequest.units),
-      urgency_level: newRequest.urgency,
-      urgency: newRequest.urgency,
-      patient_name: newRequest.patient.trim(),
-      patient: newRequest.patient.trim(),
-      district: newRequest.district || null,
-      taluk: newRequest.taluk || null,
-      latitude: newRequest.latitude === '' ? null : newRequest.latitude,
-      longitude: newRequest.longitude === '' ? null : newRequest.longitude,
-      status: 'PENDING',
-      request_date: new Date().toISOString().slice(0, 16).replace('T', ' ')
-    };
-
+    setIsSubmitting(true);
     try {
-      if (onRequestCreated) await onRequestCreated(reqObj);
+      if (typeof onRequestCreated !== 'function') throw new Error('Request creation service is unavailable.');
+      const saved = await onRequestCreated({
+        hospital_name: newRequest.hospital_name.trim(),
+        hospital_address: newRequest.hospital_address.trim(),
+        contact_phone: newRequest.contact_phone.trim(),
+        blood_group: newRequest.blood_group,
+        units_needed: Number(newRequest.units),
+        urgency_level: newRequest.urgency,
+        patient_name: newRequest.patient.trim(),
+        destination_latitude: latitude,
+        destination_longitude: longitude
+      });
+      if (!saved || saved.id == null) throw new Error('The backend did not confirm a persisted request ID.');
+      setIsDirty(false);
       setShowReqModal(false);
+      resetRequestForm();
     } catch (error) {
-      setFormError(error.message || 'The request could not be saved. Please retry.');
+      setFormError(error.message || 'The request could not be saved. No success has been assumed.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -136,7 +126,7 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
           </div>
 
           <button
-            onClick={() => { setFormError(''); setShowReqModal(true); }}
+            onClick={() => { setFormError(''); setIsDirty(false); setShowReqModal(true); }}
             className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-blood-600 to-blood-700 hover:from-blood-500 hover:to-blood-600 text-white font-bold text-xs shadow-lg glow-red flex items-center space-x-2 transition-all"
           >
             <Plus className="w-4 h-4" />
@@ -157,7 +147,6 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
                   <th className="py-2.5 px-3">Req ID</th>
                   <th className="py-2.5 px-3">Hospital Name</th>
                   <th className="py-2.5 px-3">Hospital Address</th>
-                  <th className="py-2.5 px-3">District / Taluk</th>
                   <th className="py-2.5 px-3">Blood Group</th>
                   <th className="py-2.5 px-3">Units</th>
                   <th className="py-2.5 px-3">Urgency</th>
@@ -183,10 +172,6 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
                       </td>
                       <td className="py-2.5 px-3 text-slate-400 max-w-xs truncate" title={req.hospital_address || ''}>
                         {req.hospital_address || 'Address on file'}
-                      </td>
-                      <td className="py-2.5 px-3 text-slate-300">
-                        {[req.taluk, req.district].filter(Boolean).join(', ') || 'Not recorded'}
-                        <span className="mt-1 block text-[10px] text-slate-500">{req.latitude != null && req.longitude != null ? 'Coordinates recorded' : 'Distance unavailable'}</span>
                       </td>
                       <td className="py-2.5 px-3 font-extrabold text-blood-400 text-sm">
                         {req.blood || req.blood_group}
@@ -224,13 +209,11 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
 
       {/* Modal for Creating Extended Blood Requisition */}
       {showReqModal && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-lg p-6 rounded-2xl glass-panel border border-slate-800 space-y-4 shadow-2xl">
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-start md:items-center justify-center overflow-y-auto p-3 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) closeRequestModal(); }}>
+          <div role="dialog" aria-modal="true" aria-labelledby="hospital-request-title" className="my-2 w-full max-w-lg max-h-[calc(100dvh-1rem)] overflow-y-auto overscroll-contain p-5 sm:p-6 rounded-2xl glass-panel border border-slate-800 space-y-4 shadow-2xl">
             <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-              <h3 className="text-lg font-extrabold text-white">Create Hospital Blood Request</h3>
-              <span className="text-[10px] bg-blood-950 text-blood-400 border border-blood-800 px-2 py-0.5 rounded font-bold">
-                Live Staff Sync
-              </span>
+              <h3 id="hospital-request-title" className="text-lg font-extrabold text-white">Create Hospital Blood Request</h3>
+              <button type="button" onClick={closeRequestModal} disabled={isSubmitting} aria-label="Back to hospital dashboard" className="p-2 rounded-lg text-slate-300 hover:bg-slate-800 disabled:opacity-50"><X className="w-4 h-4" /></button>
             </div>
 
             {formError && (
@@ -247,7 +230,7 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
                     type="text"
                     required
                     value={newRequest.hospital_name}
-                    onChange={(e) => setNewRequest({ ...newRequest, hospital_name: e.target.value })}
+                    onChange={(e) => updateField('hospital_name', e.target.value)}
                     className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blood-500"
                   />
                 </div>
@@ -257,7 +240,7 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
                   <input
                     type="tel"
                     value={newRequest.contact_phone}
-                    onChange={(e) => setNewRequest({ ...newRequest, contact_phone: e.target.value })}
+                    onChange={(e) => updateField('contact_phone', e.target.value)}
                     className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blood-500"
                     placeholder="+1-800-555-0101"
                   />
@@ -270,26 +253,24 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
                   required
                   rows={2}
                   value={newRequest.hospital_address}
-                  onChange={(e) => setNewRequest({ ...newRequest, hospital_address: e.target.value })}
+                  onChange={(e) => updateField('hospital_address', e.target.value)}
                   className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blood-500"
                   placeholder="e.g. 100 Healthcare Blvd, Suite 400, Trauma Wing Desk"
                 />
               </div>
 
-              <LocationFields
-                value={newRequest}
-                onChange={setNewRequest}
-                requiredLocation
-                showCoordinates
-                showLocality={false}
-              />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div><label htmlFor="destination-latitude" className="text-slate-300 block mb-1 font-semibold">Destination latitude (optional)</label><input id="destination-latitude" type="number" min="-90" max="90" step="any" value={newRequest.destination_latitude} onChange={(event) => updateField('destination_latitude', event.target.value)} className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white" placeholder="12.9716" /></div>
+                <div><label htmlFor="destination-longitude" className="text-slate-300 block mb-1 font-semibold">Destination longitude (optional)</label><input id="destination-longitude" type="number" min="-180" max="180" step="any" value={newRequest.destination_longitude} onChange={(event) => updateField('destination_longitude', event.target.value)} className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white" placeholder="77.5946" /></div>
+              </div>
+              <p className="text-[10px] text-slate-500">Only enter coordinates confirmed for this hospital destination; they are used by the radius filter.</p>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-slate-300 block mb-1 font-semibold">Blood Group Required *</label>
                   <select
                     value={newRequest.blood_group}
-                    onChange={(e) => setNewRequest({ ...newRequest, blood_group: e.target.value })}
+                    onChange={(e) => updateField('blood_group', e.target.value)}
                     className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-blood-400 font-bold focus:outline-none"
                   >
                     {['O+', 'O-', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-'].map(b => (
@@ -306,7 +287,7 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
                     max="50"
                     required
                     value={newRequest.units}
-                    onChange={(e) => setNewRequest({ ...newRequest, units: e.target.value })}
+                    onChange={(e) => updateField('units', e.target.value)}
                     className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none"
                   />
                 </div>
@@ -317,7 +298,7 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
                   <label className="text-slate-300 block mb-1 font-semibold">Urgency Level *</label>
                   <select
                     value={newRequest.urgency}
-                    onChange={(e) => setNewRequest({ ...newRequest, urgency: e.target.value })}
+                    onChange={(e) => updateField('urgency', e.target.value)}
                     className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none"
                   >
                     <option value="EMERGENCY">EMERGENCY (Immediate Dispatch)</option>
@@ -332,7 +313,7 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
                     type="text"
                     required
                     value={newRequest.patient}
-                    onChange={(e) => setNewRequest({ ...newRequest, patient: e.target.value })}
+                    onChange={(e) => updateField('patient', e.target.value)}
                     className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none"
                     placeholder="e.g. ICU Ward Bed #4"
                   />
@@ -342,16 +323,18 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
               <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-800">
                 <button
                   type="button"
-                  onClick={() => setShowReqModal(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 font-semibold"
+                  onClick={closeRequestModal}
+                  disabled={isSubmitting}
+                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 font-semibold disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-blood-600 to-blood-700 hover:from-blood-500 hover:to-blood-600 text-white font-extrabold shadow-md glow-red"
+                  disabled={isSubmitting}
+                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-blood-600 to-blood-700 hover:from-blood-500 hover:to-blood-600 text-white font-extrabold shadow-md glow-red disabled:opacity-50"
                 >
-                  Submit & Sync with Staff
+                  {isSubmitting ? 'Saving request…' : 'Submit & Sync with Staff'}
                 </button>
               </div>
             </form>
