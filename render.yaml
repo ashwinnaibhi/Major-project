@@ -15,9 +15,9 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: FRONTEND_BASE_URL
-        value: https://haemopulse.pages.dev
+        value: https://haemopulse.ashwinkumarnsrao.workers.dev
       - key: ALLOWED_ORIGINS
-        value: https://haemopulse.pages.dev,https://haemopulse.vercel.app
+        value: https://haemopulse.ashwinkumarnsrao.workers.dev,https://haemopulse.pages.dev,https://haemopulse.vercel.app
       - key: HAEMOPULSE_DISABLE_EXTERNAL_MESSAGES
         value: "false"
 

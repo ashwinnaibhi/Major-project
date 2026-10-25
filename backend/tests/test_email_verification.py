@@ -816,5 +816,115 @@ class TestEmailVerification(unittest.TestCase):
             self.assertIn("Authorized IPs", data["message"])
 
 
+    def test_34_build_verification_link_production_domain(self):
+        """In production, unset frontend URL defaults safely to the production workers.dev domain."""
+        with patch.dict(os.environ, {
+            "ENVIRONMENT": "production",
+            "FRONTEND_BASE_URL": "",
+            "FRONTEND_URL": ""
+        }):
+            link = email_service.build_verification_link("test_token_123")
+            self.assertEqual(
+                link,
+                "https://haemopulse.ashwinkumarnsrao.workers.dev/verify-email?token=test_token_123"
+            )
+
+    def test_35_build_verification_link_prevents_localhost_in_production(self):
+        """In production, an accidental localhost URL is rejected in favor of the production domain."""
+        with patch.dict(os.environ, {
+            "RENDER": "true",
+            "FRONTEND_BASE_URL": "http://localhost:3000"
+        }):
+            link = email_service.build_verification_link("test_token_456")
+            self.assertEqual(
+                link,
+                "https://haemopulse.ashwinkumarnsrao.workers.dev/verify-email?token=test_token_456"
+            )
+            self.assertNotIn("localhost", link)
+
+    def test_36_build_verification_link_prevents_backend_domain_in_production(self):
+        """In production, configuring the backend Render domain falls back to the frontend domain."""
+        with patch.dict(os.environ, {
+            "ENVIRONMENT": "production",
+            "FRONTEND_BASE_URL": "https://haemopulse-backend.onrender.com"
+        }):
+            link = email_service.build_verification_link("test_token_789")
+            self.assertEqual(
+                link,
+                "https://haemopulse.ashwinkumarnsrao.workers.dev/verify-email?token=test_token_789"
+            )
+
+    def test_37_build_verification_link_url_encodes_token(self):
+        """Tokens with special characters (+, /, =, spaces) are properly URL-encoded."""
+        with patch.dict(os.environ, {
+            "ENVIRONMENT": "production",
+            "FRONTEND_BASE_URL": ""
+        }):
+            raw_token = "abc+def/ghi=jkl mn"
+            link = email_service.build_verification_link(raw_token)
+            self.assertIn("token=abc%2Bdef%2Fghi%3Djkl%20mn", link)
+            self.assertNotIn(" ", link)
+
+    def test_38_registration_uses_production_verification_link(self):
+        """Donor registration flow generates verification emails pointing to the production domain."""
+        conn = sqlite3.connect(TEST_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        with patch.dict(os.environ, {
+            "ENVIRONMENT": "production",
+            "FRONTEND_BASE_URL": "",
+            "HAEMOPULSE_MOCK_SMTP": "true"
+        }):
+            user, delivery = server._do_register_donor(
+                email="prod_link_donor@example.com",
+                password="pass",
+                name="Prod Link Donor",
+                blood_group="A+",
+                phone="9988776655",
+                district="Zone",
+                taluk="Taluk",
+                gender="Male",
+                age=25,
+                location="Loc",
+                preferred_time="Morning",
+                conn=conn
+            )
+            conn.close()
+            self.assertTrue(delivery["sent"])
+            self.assertIn("https://haemopulse.ashwinkumarnsrao.workers.dev/verify-email?token=", delivery["verify_link"])
+            self.assertNotIn("localhost", delivery["verify_link"])
+
+    def test_39_resend_uses_production_verification_link(self):
+        """Resend-verification flow generates verification emails pointing to the production domain."""
+        conn = sqlite3.connect(TEST_DB_PATH)
+        conn.execute(
+            """INSERT INTO users (name, email, password, phone, role, is_verified, last_verification_email_sent_at)
+               VALUES ('Prod Resend User', 'prod_resend_user@example.com', 'hash', '1234567890', 'ROLE_DONOR', 0, NULL)"""
+        )
+        conn.commit()
+        conn.close()
+
+        with patch.dict(os.environ, {
+            "ENVIRONMENT": "production",
+            "FRONTEND_BASE_URL": "",
+            "HAEMOPULSE_MOCK_SMTP": "true"
+        }):
+            res = self.client.post("/api/v1/auth/resend-verification", json={"email": "prod_resend_user@example.com"})
+            self.assertEqual(res.status_code, 200)
+            delivery = res.json()["delivery"]
+            self.assertTrue(delivery["sent"])
+            self.assertIn("https://haemopulse.ashwinkumarnsrao.workers.dev/verify-email?token=", delivery["verify_link"])
+            self.assertNotIn("localhost", delivery["verify_link"])
+
+    def test_40_local_development_url_configurable(self):
+        """In local development, custom frontend URLs remain fully configurable."""
+        with patch.dict(os.environ, {
+            "ENVIRONMENT": "development",
+            "RENDER": "",
+            "FRONTEND_BASE_URL": "http://localhost:5173"
+        }):
+            link = email_service.build_verification_link("dev_tok")
+            self.assertEqual(link, "http://localhost:5173/verify-email?token=dev_tok")
+
+
 if __name__ == "__main__":
     unittest.main()

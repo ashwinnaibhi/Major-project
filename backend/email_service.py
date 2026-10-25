@@ -16,6 +16,7 @@ import smtplib
 import socket
 import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
@@ -341,6 +342,8 @@ def get_email_service_diagnostics(*, probe: bool = False) -> dict:
     report = {
         "external_messages_enabled": ext_enabled,
         "haemopulse_disable_external_messages_raw": raw_disable,
+        "frontend_base_url": get_frontend_base_url(),
+        "is_production": is_production_environment(),
         "email_delivery_method_env": method or "(not set, using auto-detection)",
         "active_provider": active_provider,
         "brevo": brevo_info,
@@ -374,6 +377,71 @@ class SubmissionResult:
     error_code: str | None = None
     http_status: int | None = None
     retry_after_seconds: int | None = None
+
+
+
+PRODUCTION_FRONTEND_URL = "https://haemopulse.ashwinkumarnsrao.workers.dev"
+DEFAULT_DEV_FRONTEND_URL = "http://localhost:3000"
+
+
+def is_production_environment() -> bool:
+    """Return True if running in production mode (e.g. Render, production flag)."""
+    return (
+        os.getenv("ENVIRONMENT", "").strip().lower() in {"production", "prod"}
+        or os.getenv("HAEMOPULSE_ENV", "").strip().lower() in {"production", "prod"}
+        or os.getenv("RENDER", "").strip().lower() in {"true", "1"}
+        or bool(os.getenv("DATABASE_URL", "").strip().startswith(("postgres://", "postgresql://")))
+    )
+
+
+def get_frontend_base_url() -> str:
+    """Resolve and validate the frontend base URL for user-facing links.
+
+    Precedence & Safety:
+    1. Reads FRONTEND_BASE_URL or FRONTEND_URL.
+    2. In production (ENVIRONMENT=production, RENDER=true, or PostgreSQL):
+       - If explicitly configured to a valid public URL, uses that.
+       - Disallows localhost/127.0.0.1 or backend Render hosts (falls back safely to PRODUCTION_FRONTEND_URL).
+       - If unset in production, defaults safely to PRODUCTION_FRONTEND_URL. Never emits localhost in production.
+    3. In local development / testing:
+       - Uses configured URL if present, otherwise defaults to http://localhost:3000.
+    """
+    load_haemopulse_env()
+    raw = (os.getenv("FRONTEND_BASE_URL") or os.getenv("FRONTEND_URL") or "").strip()
+    is_prod = is_production_environment()
+
+    if raw:
+        cleaned = raw.rstrip("/")
+        # Detect accidental local URL or backend URL configured in production
+        is_local = any(loc in cleaned.lower() for loc in ("localhost", "127.0.0.1", "0.0.0.0", "::1"))
+        is_backend = any(b in cleaned.lower() for b in ("onrender.com", "koyeb.app"))
+        if is_prod and (is_local or is_backend):
+            reason = "local address" if is_local else "backend host"
+            logger.warning(
+                "FRONTEND_BASE_URL is configured to %s '%s' in a production environment. "
+                "Defaulting safely to production frontend: %s",
+                reason,
+                cleaned,
+                PRODUCTION_FRONTEND_URL,
+            )
+            return PRODUCTION_FRONTEND_URL
+        return cleaned
+
+    if is_prod:
+        return PRODUCTION_FRONTEND_URL
+
+    return DEFAULT_DEV_FRONTEND_URL
+
+
+def build_verification_link(raw_token: str) -> str:
+    """Build a secure, properly URL-encoded email verification link.
+
+    Format: <frontend_base>/verify-email?token=<url_encoded_token>
+    """
+    base = get_frontend_base_url().rstrip("/")
+    clean_token = str(raw_token or "").strip()
+    encoded_token = urllib.parse.quote(clean_token, safe="")
+    return f"{base}/verify-email?token={encoded_token}"
 
 
 def _safe_header(value: str, *, max_len: int = 180) -> str:
@@ -719,8 +787,7 @@ def send_verification_smtp_email(*, recipient_email: str, recipient_name: str, r
       - error: Optional[str]
     """
     load_haemopulse_env()
-    frontend_base = os.getenv("FRONTEND_BASE_URL") or os.getenv("FRONTEND_URL") or "http://localhost:3000"
-    verify_link = f"{frontend_base.rstrip('/')}/verify-email?token={raw_token}"
+    verify_link = build_verification_link(raw_token)
     subject, text_body, html_body = render_verification_email(recipient_name, verify_link)
 
     # 1. Automated test mock mode override (never touches network during tests)
@@ -855,7 +922,7 @@ def render_donor_emergency_email(request: Mapping[str, Any], donor_name: str) ->
     urgency = _safe_header(request.get("urgency_level", "EMERGENCY"), max_len=32)
     units = request.get("units_needed", "Not specified")
     address = str(request.get("hospital_address") or "Not specified")
-    url = os.getenv("FRONTEND_BASE_URL") or os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
+    url = get_frontend_base_url().rstrip("/")
     subject = _safe_header(f"Emergency blood request #{request_id}: {blood_group}")
     text = (
         f"Hello {donor_name or 'Donor'},\n\nHaemoPulse has an emergency blood request that may match your profile.\n"
@@ -888,7 +955,7 @@ def render_acceptance_email(request: Mapping[str, Any], donor: Mapping[str, Any]
     donor_name = _safe_header(donor.get("name", "Donor"), max_len=120)
     accepted_at = _safe_header(donor.get("accepted_at", ""), max_len=40)
     recipient_label = "hospital" if recipient_kind == "HOSPITAL" else "assigned administrator"
-    url = os.getenv("FRONTEND_BASE_URL") or os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
+    url = get_frontend_base_url().rstrip("/")
     subject = _safe_header(f"HaemoPulse: donor accepted emergency request #{request_id}")
     text = (f"Hello,\n\nA donor accepted emergency request #{request_id}.\nBlood group: {blood_group}\n"
             f"Hospital: {hospital}\nDonor: {donor_name}\nAccepted at: {accepted_at}\n\n"
@@ -910,8 +977,7 @@ def send_verification_brevo_api(*, recipient_email: str, recipient_name: str, ra
                                 timeout_seconds: int = 10) -> dict:
     """Send verification email via Brevo HTTPS API on port 443 (supported on Render free tier)."""
     load_haemopulse_env()
-    frontend_base = os.getenv("FRONTEND_BASE_URL") or os.getenv("FRONTEND_URL") or "http://localhost:3000"
-    verify_link = f"{frontend_base.rstrip('/')}/verify-email?token={raw_token}"
+    verify_link = build_verification_link(raw_token)
     subject, text_body, html_body = render_verification_email(recipient_name, verify_link)
 
     if os.getenv("HAEMOPULSE_MOCK_SMTP", "false").strip().lower() in {"1", "true", "yes"}:
@@ -1079,8 +1145,7 @@ def send_verification_resend_api(*, recipient_email: str, recipient_name: str, r
                                  timeout_seconds: int = 10) -> dict:
     """Send verification email via Resend HTTPS API on port 443 (supported on Render free tier)."""
     load_haemopulse_env()
-    frontend_base = os.getenv("FRONTEND_BASE_URL") or os.getenv("FRONTEND_URL") or "http://localhost:3000"
-    verify_link = f"{frontend_base.rstrip('/')}/verify-email?token={raw_token}"
+    verify_link = build_verification_link(raw_token)
     subject, text_body, html_body = render_verification_email(recipient_name, verify_link)
 
     if os.getenv("HAEMOPULSE_MOCK_SMTP", "false").strip().lower() in {"1", "true", "yes"}:
