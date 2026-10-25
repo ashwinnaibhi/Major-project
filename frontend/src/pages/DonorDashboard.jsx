@@ -94,11 +94,43 @@ export default function DonorDashboard({
   const [showCertModal, setShowCertModal] = useState(false);
 
   const [respondedAlerts, setRespondedAlerts] = useState({});
+  const [emergencyResponsesHistory, setEmergencyResponsesHistory] = useState([]);
+  const [emergencyHistoryFilter, setEmergencyHistoryFilter] = useState('ALL');
+  const [isLoadingResponsesHistory, setIsLoadingResponsesHistory] = useState(false);
   const [availabilityPrediction, setAvailabilityPrediction] = useState({ status: 'idle', data: null, message: '' });
   const [appointmentError, setAppointmentError] = useState('');
   const [requestActionBusy, setRequestActionBusy] = useState({});
   const [requestActionMessages, setRequestActionMessages] = useState({});
   const [requestActionNotice, setRequestActionNotice] = useState('');
+
+  const fetchEmergencyResponsesHistory = async () => {
+    if (!currentUser?.token) {
+      setEmergencyResponsesHistory([]);
+      return;
+    }
+    setIsLoadingResponsesHistory(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/donors/me/emergency-responses`, {
+        headers: { Authorization: `Bearer ${currentUser.token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) setEmergencyResponsesHistory(data);
+      }
+    } catch (_) {
+      // Keep existing state
+    } finally {
+      setIsLoadingResponsesHistory(false);
+    }
+  };
+
+  useEffect(() => {
+    if (currentUser?.token) {
+      fetchEmergencyResponsesHistory();
+    } else {
+      setEmergencyResponsesHistory([]);
+    }
+  }, [currentUser?.token]);
 
   // Shared district/taluk catalog used by registration.
   useEffect(() => {
@@ -348,6 +380,7 @@ export default function DonorDashboard({
       }
       setRespondedAlerts((previous) => ({ ...previous, [requestId]: confirmedResponse }));
       setRequestActionMessages((previous) => ({ ...previous, [requestId]: data.message || `Your ${confirmedResponse.toLowerCase()} response was recorded.` }));
+      fetchEmergencyResponsesHistory();
       // The API response is authoritative; refresh so persisted per-donor state is reloaded.
       if (onRefreshRequests) {
         try {
@@ -1307,6 +1340,92 @@ export default function DonorDashboard({
                   </div>
                 );
               })
+            )}
+          </div>
+
+          {/* MY EMERGENCY RESPONSES HISTORY */}
+          <div className="pt-6 border-t border-slate-800 space-y-4">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div>
+                <h4 className="text-sm font-bold text-white flex items-center space-x-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  <span>My Emergency Responses History</span>
+                </h4>
+                <p className="text-xs text-slate-400">Past and active hospital requisitions you have accepted or rejected.</p>
+              </div>
+
+              {/* Filter Buttons */}
+              <div className="flex items-center gap-1.5 p-1 rounded-xl bg-slate-900 border border-slate-800 text-xs">
+                {['ALL', 'ACCEPTED', 'REJECTED'].map((filterKey) => {
+                  const count = filterKey === 'ALL'
+                    ? emergencyResponsesHistory.length
+                    : emergencyResponsesHistory.filter((r) => r.response === filterKey).length;
+                  return (
+                    <button
+                      key={filterKey}
+                      onClick={() => setEmergencyHistoryFilter(filterKey)}
+                      className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
+                        emergencyHistoryFilter === filterKey
+                          ? 'bg-blood-700 text-white shadow-sm'
+                          : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                      }`}
+                    >
+                      {filterKey === 'ALL' ? 'All' : filterKey.charAt(0) + filterKey.slice(1).toLowerCase()} ({count})
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* List */}
+            {isLoadingResponsesHistory ? (
+              <p className="text-xs text-slate-500 py-4 text-center">Loading response history…</p>
+            ) : emergencyResponsesHistory.length === 0 ? (
+              <div className="p-6 text-center text-slate-500 text-xs rounded-xl bg-slate-900/40 border border-slate-800">
+                You have not responded to any emergency requisitions yet.
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {emergencyResponsesHistory
+                  .filter((item) => emergencyHistoryFilter === 'ALL' || item.response === emergencyHistoryFilter)
+                  .map((item) => (
+                    <div
+                      key={item.response_id || `resp-${item.request_id}`}
+                      className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center space-x-2">
+                          <span className="font-bold text-white">{item.hospital_name || 'Hospital Requisition'}</span>
+                          <span className="text-[10px] font-mono text-slate-500">#{item.request_id}</span>
+                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 border border-slate-700">
+                            {item.request_status || 'CLOSED'}
+                          </span>
+                        </div>
+                        <p className="text-slate-400 text-[11px]">
+                          Requested: <strong className="text-blood-400">{item.units_needed ?? 1} units</strong> of <strong className="text-white">{item.blood_group}</strong>
+                          {item.urgency_level ? ` · ${item.urgency_level}` : ''}
+                          {item.patient_name ? ` · Patient: ${item.patient_name}` : ''}
+                        </p>
+                        <p className="text-slate-500 text-[10px] flex items-center space-x-1">
+                          <Clock className="w-3 h-3" />
+                          <span>Responded on: {item.responded_at || 'Recorded'}</span>
+                        </p>
+                      </div>
+
+                      <div className="flex items-center self-start sm:self-center">
+                        <span
+                          className={`px-3 py-1 rounded-lg text-xs font-bold border ${
+                            item.response === 'ACCEPTED'
+                              ? 'bg-emerald-950 text-emerald-300 border-emerald-800'
+                              : 'bg-slate-950 text-slate-300 border-slate-700'
+                          }`}
+                        >
+                          Response: {item.response}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+              </div>
             )}
           </div>
         </div>

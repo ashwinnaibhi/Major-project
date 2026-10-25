@@ -1135,7 +1135,7 @@ def list_requests(user: dict = Depends(get_current_user),
     else:
         # Donor: show EMERGENCY/HIGH requests matching their blood group
         donor = conn.execute(
-            "SELECT id, blood_group FROM donors WHERE user_id = ? OR LOWER(email) = LOWER(?)",
+            "SELECT id, donor_id, blood_group FROM donors WHERE user_id = ? OR LOWER(email) = LOWER(?)",
             (user["id"], user["email"])
         ).fetchone()
         if not donor:
@@ -1143,15 +1143,18 @@ def list_requests(user: dict = Depends(get_current_user),
         bg = donor["blood_group"]
         compatible = BLOOD_COMPATIBILITY.get(bg, [bg])
         ph = ",".join(["?"] * len(compatible))
+        donor_row = dict(donor)
+        donor_pk = str(donor_row["id"])
+        donor_code = str(donor_row.get("donor_id") or donor_row["id"])
         try:
             rows = conn.execute(
                 f"""SELECT r.*, err.response AS donor_response
                     FROM blood_requests r
                     LEFT JOIN emergency_request_responses err
-                      ON err.request_id = r.id AND err.donor_id = ?
+                      ON err.request_id = r.id AND (err.donor_id = ? OR err.donor_id = ?)
                     WHERE r.blood_group IN ({ph}) AND r.status = 'PENDING'
                     ORDER BY r.request_date DESC""",
-                [str(donor["id"])] + list(compatible)
+                [donor_pk, donor_code] + list(compatible)
             ).fetchall()
         except Exception:
             rows = conn.execute(
@@ -1234,7 +1237,7 @@ def create_request(payload: CreateRequestPayload,
 @app.post("/api/v1/requests/{request_id}/response")
 def respond_to_request(request_id: int, payload: RequestResponsePayload,
                        user: dict = Depends(get_current_user),
-                       conn: sqlite3.Connection = Depends(get_db)):
+                       conn: Any = Depends(get_db)):
     if user["role"] != "ROLE_DONOR":
         raise HTTPException(status_code=403, detail="Donor access only")
 
@@ -1260,9 +1263,10 @@ def respond_to_request(request_id: int, payload: RequestResponsePayload,
     if not donor:
         raise HTTPException(status_code=404, detail="Donor profile not found")
 
-    # Try to insert into emergency_request_responses if it exists
+    donor_key = str(donor["id"])
+    now_iso = datetime.datetime.utcnow().isoformat(sep=" ", timespec="seconds")
+
     try:
-        now_iso = datetime.datetime.utcnow().isoformat(sep=" ", timespec="seconds")
         conn.execute(
             """INSERT INTO emergency_request_responses
                  (request_id, donor_id, response, created_at)
@@ -1270,27 +1274,74 @@ def respond_to_request(request_id: int, payload: RequestResponsePayload,
                ON CONFLICT(request_id, donor_id) DO UPDATE SET
                  response = excluded.response,
                  created_at = excluded.created_at""",
-            (request_id, str(donor["id"]), action, now_iso)
+            (request_id, donor_key, action, now_iso)
         )
         conn.commit()
-    except Exception:
-        try:
-            now_iso = datetime.datetime.utcnow().isoformat(sep=" ", timespec="seconds")
-            conn.execute(
-                """INSERT OR REPLACE INTO emergency_request_responses
-                     (request_id, donor_id, response, created_at)
-                   VALUES (?, ?, ?, ?)""",
-                (request_id, str(donor["id"]), action, now_iso)
-            )
-            conn.commit()
-        except Exception:
-            conn.rollback()
+    except Exception as exc:
+        conn.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database failed to record emergency response: {str(exc)}"
+        )
 
     return {
         "success": True,
         "response": action,
         "message": f"Your {action.lower()} response was recorded.",
     }
+
+
+@app.get("/api/v1/donors/me/emergency-responses")
+def get_my_emergency_responses(user: dict = Depends(get_current_user),
+                               conn: Any = Depends(get_db)):
+    if user["role"] != "ROLE_DONOR":
+        raise HTTPException(status_code=403, detail="Donor access only")
+
+    donor = conn.execute(
+        "SELECT id, donor_id FROM donors WHERE user_id = ? OR LOWER(email) = LOWER(?)",
+        (user["id"], user["email"])
+    ).fetchone()
+    if not donor:
+        return []
+
+    donor_row = dict(donor)
+    donor_pk = str(donor_row["id"])
+    donor_code = str(donor_row.get("donor_id") or donor_row["id"])
+
+    try:
+        rows = conn.execute(
+            """SELECT err.id AS response_id, err.request_id, err.response, err.created_at AS responded_at,
+                      r.hospital_name, r.hospital_address, r.blood_group, r.units_needed,
+                      r.urgency_level, r.patient_name, r.contact_phone, r.status AS request_status,
+                      r.request_date
+               FROM emergency_request_responses err
+               JOIN blood_requests r ON r.id = err.request_id
+               WHERE err.donor_id = ? OR err.donor_id = ?
+               ORDER BY err.created_at DESC, err.id DESC""",
+            (donor_pk, donor_code)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+@app.get("/api/v1/admin/emergency-responses")
+def get_admin_emergency_responses(user: dict = Depends(get_current_user),
+                                  conn: Any = Depends(get_db)):
+    if user["role"] != "ROLE_ADMIN":
+        raise HTTPException(status_code=403, detail="Administrator access required")
+
+    try:
+        rows = conn.execute(
+            """SELECT err.id AS response_id, err.request_id, err.donor_id, err.response, err.created_at AS responded_at,
+                      r.hospital_name, r.blood_group, r.units_needed, r.urgency_level, r.status AS request_status
+               FROM emergency_request_responses err
+               JOIN blood_requests r ON r.id = err.request_id
+               ORDER BY err.created_at DESC, err.id DESC"""
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
 
 
 # ─────────────────────────────────────────────────────────────────────────────

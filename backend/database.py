@@ -449,6 +449,17 @@ def get_db_connection():
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout=30000;")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS emergency_request_responses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id INTEGER NOT NULL,
+                donor_id TEXT NOT NULL,
+                response TEXT NOT NULL CHECK(response IN ('ACCEPTED', 'REJECTED')),
+                created_at TEXT NOT NULL,
+                UNIQUE(request_id, donor_id),
+                FOREIGN KEY(request_id) REFERENCES blood_requests(id)
+            )
+        """)
         return conn
 
 
