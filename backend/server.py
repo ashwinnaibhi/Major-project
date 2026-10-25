@@ -13,7 +13,7 @@ import hmac
 import secrets
 from typing import Optional, List, Any
 
-from fastapi import FastAPI, HTTPException, Depends, Header, Query, status
+from fastapi import FastAPI, HTTPException, Depends, Header, Query, status, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pathlib import Path
@@ -696,6 +696,7 @@ def verify_email_post(payload: VerifyEmailPayload, conn: sqlite3.Connection = De
 
 @app.post("/api/v1/auth/resend-verification")
 def resend_verification(payload: ResendVerificationPayload,
+                        response: Response,
                         conn: sqlite3.Connection = Depends(get_db)):
     email_clean = (payload.email or "").strip().lower()
     if not email_clean or "@" not in email_clean:
@@ -768,16 +769,35 @@ def resend_verification(payload: ResendVerificationPayload,
     )
 
     if delivery.get("sent"):
+        response.status_code = status.HTTP_200_OK
         return {
             "success": True,
             "message": f"Verification email delivered to {user['email']}.",
             "delivery": delivery
         }
     else:
-        # Do not claim sent if delivery failed or not configured!
+        # Provider delivery failure is represented with HTTP 502 Bad Gateway
+        response.status_code = status.HTTP_502_BAD_GATEWAY
+        error_type = delivery.get("error_type", "DELIVERY_FAILED")
+        raw_error = delivery.get("error", "")
+
+        if error_type == "BREVO_IP_UNAUTHORIZED":
+            user_msg = (
+                "Email delivery failed: Brevo rejected the connection because the server outbound IP is not authorized. "
+                "The administrator must disable the 'Authorized IPs' restriction at https://app.brevo.com/security/authorised_ips in the Brevo dashboard."
+            )
+        elif error_type == "BREVO_INVALID_API_KEY":
+            user_msg = (
+                "Email delivery failed: Brevo API key authentication failed. "
+                "Please verify the BREVO_API_KEY configuration in Render."
+            )
+        else:
+            user_msg = raw_error or "Failed to deliver verification email. Please check your email configuration or try again later."
+
         return {
             "success": False,
-            "message": delivery.get("error") or "Failed to deliver verification email. Please check your SMTP configuration.",
+            "message": user_msg,
+            "detail": user_msg,
             "delivery": delivery
         }
 

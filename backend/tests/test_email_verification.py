@@ -591,6 +591,150 @@ class TestEmailVerification(unittest.TestCase):
             statuses = [f.result() for f in http_futures]
         self.assertTrue(all(s == 200 for s in statuses))
 
+    def test_24_resend_verification_brevo_unauthorized_ip(self):
+        """Resend returns HTTP 502 with actionable guidance when Brevo rejects unauthorized IP."""
+        conn = sqlite3.connect(TEST_DB_PATH)
+        conn.execute(
+            """INSERT INTO users (name, email, password, phone, role, is_verified, last_verification_email_sent_at)
+               VALUES ('IP Test User', 'ip_test@example.com', 'hash', '1234567890', 'ROLE_DONOR', 0, NULL)"""
+        )
+        conn.commit()
+        conn.close()
+
+        mock_delivery = {
+            "sent": False,
+            "recipient": "ip_test@example.com",
+            "delivery_status": "FAILED",
+            "provider": "brevo_https",
+            "error_type": "BREVO_IP_UNAUTHORIZED",
+            "error": "Brevo HTTPS delivery failed (HTTP 401): We have detected you are using an unrecognised IP address 74.220.48.235 (Brevo IP Whitelisting active: please disable Authorized IPs restriction at https://app.brevo.com/security/authorised_ips or switch to Resend/SMTP)",
+            "detected_unauthorized_ip": "74.220.48.235"
+        }
+
+        with patch("server.send_verification_email", return_value=mock_delivery):
+            res = self.client.post("/api/v1/auth/resend-verification", json={"email": "ip_test@example.com"})
+            self.assertEqual(res.status_code, 502)
+            data = res.json()
+            self.assertFalse(data["success"])
+            self.assertIn("Authorized IPs", data["message"])
+            self.assertIn("https://app.brevo.com/security/authorised_ips", data["message"])
+
+        # User must remain unverified and account intact
+        conn = sqlite3.connect(TEST_DB_PATH)
+        row = conn.execute("SELECT is_verified FROM users WHERE email = 'ip_test@example.com'").fetchone()
+        conn.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], 0)
+
+    def test_25_resend_verification_brevo_invalid_api_key(self):
+        """Resend returns HTTP 502 when Brevo rejects invalid API key."""
+        conn = sqlite3.connect(TEST_DB_PATH)
+        conn.execute(
+            """INSERT INTO users (name, email, password, phone, role, is_verified, last_verification_email_sent_at)
+               VALUES ('Key Test User', 'key_test@example.com', 'hash', '1234567890', 'ROLE_DONOR', 0, NULL)"""
+        )
+        conn.commit()
+        conn.close()
+
+        mock_delivery = {
+            "sent": False,
+            "recipient": "key_test@example.com",
+            "delivery_status": "FAILED",
+            "provider": "brevo_https",
+            "error_type": "BREVO_INVALID_API_KEY",
+            "error": "Brevo HTTPS delivery failed (HTTP 401): Key not found. Please check BREVO_API_KEY configuration."
+        }
+
+        with patch("server.send_verification_email", return_value=mock_delivery):
+            res = self.client.post("/api/v1/auth/resend-verification", json={"email": "key_test@example.com"})
+            self.assertEqual(res.status_code, 502)
+            data = res.json()
+            self.assertFalse(data["success"])
+            self.assertIn("BREVO_API_KEY", data["message"])
+
+        # User remains unverified
+        conn = sqlite3.connect(TEST_DB_PATH)
+        row = conn.execute("SELECT is_verified FROM users WHERE email = 'key_test@example.com'").fetchone()
+        conn.close()
+        self.assertEqual(row[0], 0)
+
+    def test_26_resend_verification_generic_failure(self):
+        """Resend returns HTTP 502 on generic provider failure and leaves account unverified."""
+        conn = sqlite3.connect(TEST_DB_PATH)
+        conn.execute(
+            """INSERT INTO users (name, email, password, phone, role, is_verified, last_verification_email_sent_at)
+               VALUES ('Generic Fail User', 'generic_fail@example.com', 'hash', '1234567890', 'ROLE_DONOR', 0, NULL)"""
+        )
+        conn.commit()
+        conn.close()
+
+        mock_delivery = {
+            "sent": False,
+            "recipient": "generic_fail@example.com",
+            "delivery_status": "FAILED",
+            "provider": "resend_https",
+            "error_type": "CONNECTION_TIMEOUT",
+            "error": "Connection timed out."
+        }
+
+        with patch("server.send_verification_email", return_value=mock_delivery):
+            res = self.client.post("/api/v1/auth/resend-verification", json={"email": "generic_fail@example.com"})
+            self.assertEqual(res.status_code, 502)
+            data = res.json()
+            self.assertFalse(data["success"])
+
+        # User remains unverified
+        conn = sqlite3.connect(TEST_DB_PATH)
+        row = conn.execute("SELECT is_verified FROM users WHERE email = 'generic_fail@example.com'").fetchone()
+        conn.close()
+        self.assertEqual(row[0], 0)
+
+    def test_27_delivery_failure_retains_unverified_and_blocks_appointments(self):
+        """Unverified user who experienced failed email delivery remains blocked from booking appointments."""
+        conn = sqlite3.connect(TEST_DB_PATH)
+        pw_hash = server.hash_password("testpass123")
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO users (name, email, password, phone, role, is_verified, last_verification_email_sent_at)
+               VALUES ('Blocked Booker', 'blocked_booker@example.com', ?, '1234567890', 'ROLE_DONOR', 0, NULL)""",
+            (pw_hash,)
+        )
+        uid = cur.lastrowid
+        cur.execute(
+            """INSERT INTO donors (donor_id, user_id, name, email, blood_group, age, gender, location, is_available)
+               VALUES (?, ?, 'Blocked Booker', 'blocked_booker@example.com', 'O+', 28, 'Female', 'Zone B', 1)""",
+            (f"DNR-FAIL-{uid}", uid)
+        )
+        conn.commit()
+        conn.close()
+
+        # Failed delivery attempt
+        mock_delivery = {
+            "sent": False,
+            "recipient": "blocked_booker@example.com",
+            "delivery_status": "FAILED",
+            "error_type": "BREVO_IP_UNAUTHORIZED",
+            "error": "Unauthorized IP"
+        }
+        with patch("server.send_verification_email", return_value=mock_delivery):
+            res = self.client.post("/api/v1/auth/resend-verification", json={"email": "blocked_booker@example.com"})
+            self.assertEqual(res.status_code, 502)
+
+        # Login
+        login_res = self.client.post("/api/v1/auth/login", json={"email": "blocked_booker@example.com", "password": "testpass123"})
+        self.assertEqual(login_res.status_code, 200)
+        token = login_res.json()["token"]
+        self.assertFalse(login_res.json()["user"]["is_verified"])
+
+        # Attempt to book appointment - must be forbidden (HTTP 403)
+        app_res = self.client.post("/api/v1/appointments", json={
+            "appointment_date": "2026-11-05",
+            "time_slot": "Morning (8 AM - 12 PM)",
+            "center_name": "Hub #1"
+        }, headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(app_res.status_code, 403)
+        self.assertIn("verify your email", app_res.json()["detail"].lower())
+
 
 if __name__ == "__main__":
     unittest.main()

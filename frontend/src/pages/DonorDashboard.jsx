@@ -266,6 +266,12 @@ export default function DonorDashboard({
   // Handle Resend Verification Email
   const handleResendEmail = async () => {
     if (resendCooldown > 0) return;
+    const targetEmail = (donorDetails?.email || currentUser?.email || '').trim();
+    if (!targetEmail) {
+      setResendStatus('Email address not found. Please log in again.');
+      setResendStatusError(true);
+      return;
+    }
     setResendStatus('Requesting verification email...');
     setResendStatusError(false);
 
@@ -273,28 +279,25 @@ export default function DonorDashboard({
       const res = await fetch(`${API_BASE}/api/v1/auth/resend-verification`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: donorDetails.email })
+        body: JSON.stringify({ email: targetEmail })
       });
-      const data = await res.json();
-      if (res.ok) {
-        if (data.success && data.delivery?.sent) {
-          setResendCooldown(60);
-          setResendStatus(data.message || `Verification email delivered to ${donorDetails.email}. Please check your inbox or spam folder.`);
-          setResendStatusError(false);
-        } else {
-          setResendCooldown(30);
-          const errMsg = data.delivery?.error || data.message || 'Verification email delivery failed. Please check backend SMTP configuration.';
-          setResendStatus(errMsg);
-          setResendStatusError(true);
-        }
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.delivery?.sent) {
+        setResendCooldown(60);
+        setResendStatus(data.message || `Verification email delivered to ${targetEmail}. Please check your inbox or spam folder.`);
+        setResendStatusError(false);
       } else if (res.status === 429) {
+        setResendCooldown(30);
         setResendStatus(data.detail || 'Rate limit: Please wait for the cooldown timer before requesting another email.');
         setResendStatusError(true);
       } else {
-        setResendStatus(data.detail || data.message || 'Could not send verification email right now.');
+        setResendCooldown(15);
+        const errMsg = data.detail || data.message || data.delivery?.error || 'Verification email delivery failed. Please check backend email configuration.';
+        setResendStatus(errMsg);
         setResendStatusError(true);
       }
     } catch (e) {
+      setResendCooldown(15);
       setResendStatus('Could not reach the backend. Verification email delivery was not confirmed.');
       setResendStatusError(true);
     }
