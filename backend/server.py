@@ -91,6 +91,7 @@ cors_origins = [
     "http://127.0.0.1:3000",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "https://haemopulse.ashwinkumarnsrao.workers.dev",
 ]
 for _env_key in ("FRONTEND_BASE_URL", "FRONTEND_URL", "ALLOWED_ORIGINS"):
     _val = os.getenv(_env_key, "").strip()
@@ -103,7 +104,7 @@ for _env_key in ("FRONTEND_BASE_URL", "FRONTEND_URL", "ALLOWED_ORIGINS"):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|172\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|.*\.pages\.dev|.*\.vercel\.app|.*\.onrender\.com|.*\.koyeb\.app)(:\d+)?$",
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|172\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|.*\.pages\.dev|.*\.workers\.dev|.*\.vercel\.app|.*\.onrender\.com|.*\.koyeb\.app)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -2073,6 +2074,10 @@ def get_model_metrics():
             "precision": 0.86,
             "recall": 0.89,
             "f1_score": 0.87,
+            "Accuracy": 88.0,
+            "Precision": 86.0,
+            "Recall": 89.0,
+            "F1_Score": 87.0,
             "model": "RandomForestClassifier",
             "pipeline_loaded": _ml_pipeline is not None,
             "status": "Trained & Active" if _ml_pipeline is not None else "Heuristic Ready"

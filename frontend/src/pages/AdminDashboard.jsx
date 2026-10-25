@@ -126,8 +126,16 @@ export default function AdminDashboard({ onNavigate, donorsList = [], requestsLi
         />
         <StatCard
           title="ML Engine Accuracy"
-          value={modelMetrics?.Accuracy == null ? 'Unavailable' : `${Number(modelMetrics.Accuracy).toFixed(2)}%`}
-          subtitle={modelMetrics?.F1_Score == null ? 'Evaluation metrics unavailable' : `F1 Score: ${Number(modelMetrics.F1_Score).toFixed(2)}%`}
+          value={
+            (modelMetrics?.Accuracy ?? modelMetrics?.accuracy) == null
+              ? 'Unavailable'
+              : `${(Number(modelMetrics.Accuracy ?? modelMetrics.accuracy) <= 1 ? Number(modelMetrics.Accuracy ?? modelMetrics.accuracy) * 100 : Number(modelMetrics.Accuracy ?? modelMetrics.accuracy)).toFixed(2)}%`
+          }
+          subtitle={
+            (modelMetrics?.F1_Score ?? modelMetrics?.f1_score) == null
+              ? 'Evaluation metrics unavailable'
+              : `F1 Score: ${(Number(modelMetrics.F1_Score ?? modelMetrics.f1_score) <= 1 ? Number(modelMetrics.F1_Score ?? modelMetrics.f1_score) * 100 : Number(modelMetrics.F1_Score ?? modelMetrics.f1_score)).toFixed(2)}%`
+          }
           icon={BrainCircuit}
           trend="Stored model evaluation snapshot; synthetic dataset"
           color="blue"

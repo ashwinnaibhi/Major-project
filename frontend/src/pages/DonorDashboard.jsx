@@ -22,7 +22,6 @@ export default function DonorDashboard({
   activeSubTab = 'donor_dashboard'
 }) {
   const isLoggedIn = currentUser && currentUser.isLoggedIn;
-  const isVerified = Boolean(currentUser?.is_verified || donorDetails?.is_verified);
 
   // Tabs for Auth: 'register' | 'login'
   const [authTab, setAuthTab] = useState('register');
@@ -74,6 +73,7 @@ export default function DonorDashboard({
     availability_score: null,
     availability_status: null
   });
+  const isVerified = Boolean(currentUser?.is_verified || donorDetails?.is_verified);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileLoadError, setProfileLoadError] = useState('');
   const [locations, setLocations] = useState({ districts: [], taluks_by_district: {} });
