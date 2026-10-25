@@ -325,14 +325,20 @@ export default function DonorDashboard({
     setRequestActionMessages((previous) => ({ ...previous, [requestId]: '' }));
     setRequestActionNotice('');
     try {
+      const normalizedAction = String(action || '').trim().toUpperCase() === 'ACCEPT'
+        ? 'ACCEPTED'
+        : (String(action || '').trim().toUpperCase() === 'REJECT'
+          ? 'REJECTED'
+          : String(action || '').trim().toUpperCase());
+
       const response = await fetch(`${API_BASE}/api/v1/requests/${requestId}/response`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${currentUser.token}` },
-        body: JSON.stringify({ action })
+        body: JSON.stringify({ action: normalizedAction })
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const error = new Error(data.detail || `Could not ${action.toLowerCase()} this request.`);
+        const error = new Error(data.detail || `Could not ${normalizedAction === 'ACCEPTED' ? 'accept' : 'reject'} this request.`);
         error.status = response.status;
         throw error;
       }
@@ -341,7 +347,7 @@ export default function DonorDashboard({
         throw new Error('The backend did not confirm the emergency response. Refresh the request list and try again.');
       }
       setRespondedAlerts((previous) => ({ ...previous, [requestId]: confirmedResponse }));
-      setRequestActionMessages((previous) => ({ ...previous, [requestId]: data.message || `Your ${action.toLowerCase()} response was recorded.` }));
+      setRequestActionMessages((previous) => ({ ...previous, [requestId]: data.message || `Your ${confirmedResponse.toLowerCase()} response was recorded.` }));
       // The API response is authoritative; refresh so persisted per-donor state is reloaded.
       if (onRefreshRequests) {
         try {
@@ -909,8 +915,8 @@ export default function DonorDashboard({
                     <span className={`px-2 py-1 rounded-lg text-[10px] font-bold border ${quickEmergencyResponse === 'ACCEPTED' ? 'bg-emerald-950 text-emerald-300 border-emerald-800' : 'bg-slate-900 text-slate-300 border-slate-700'}`}>Response: {quickEmergencyResponse}</span>
                   ) : (
                     <>
-                      <button onClick={() => handleEmergencyResponse(quickEmergencyRequestId, 'ACCEPT')} disabled={!quickHasRequestId || !isVerified || Boolean(requestActionBusy[quickEmergencyRequestId])} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-700 hover:bg-emerald-600 text-white disabled:opacity-50">{requestActionBusy[quickEmergencyRequestId] ? 'Saving…' : 'Accept'}</button>
-                      <button onClick={() => handleEmergencyResponse(quickEmergencyRequestId, 'REJECT')} disabled={!quickHasRequestId || !isVerified || Boolean(requestActionBusy[quickEmergencyRequestId])} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 disabled:opacity-50">Reject</button>
+                      <button onClick={() => handleEmergencyResponse(quickEmergencyRequestId, 'ACCEPTED')} disabled={!quickHasRequestId || !isVerified || Boolean(requestActionBusy[quickEmergencyRequestId])} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-700 hover:bg-emerald-600 text-white disabled:opacity-50">{requestActionBusy[quickEmergencyRequestId] ? 'Saving…' : 'Accept'}</button>
+                      <button onClick={() => handleEmergencyResponse(quickEmergencyRequestId, 'REJECTED')} disabled={!quickHasRequestId || !isVerified || Boolean(requestActionBusy[quickEmergencyRequestId])} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 disabled:opacity-50">Reject</button>
                       {!isVerified && <span className="text-xs text-amber-300">Verify email to respond</span>}
                       {!quickHasRequestId && <span className="text-xs text-amber-300">Request ID unavailable; actions disabled</span>}
                     </>
@@ -1291,8 +1297,8 @@ export default function DonorDashboard({
                         <span className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${savedResponse === 'ACCEPTED' ? 'bg-emerald-950 text-emerald-300 border-emerald-800' : 'bg-slate-900 text-slate-300 border-slate-700'}`}>Response: {savedResponse}</span>
                       ) : (
                         <div className="flex gap-2">
-                          <button onClick={() => handleEmergencyResponse(reqId, 'ACCEPT')} disabled={!hasRequestId || !isVerified || Boolean(requestActionBusy[reqId]) || Boolean(respondedAlerts[reqId])} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-700 hover:bg-emerald-600 text-white disabled:opacity-50">{requestActionBusy[reqId] ? 'Saving…' : 'Accept'}</button>
-                          <button onClick={() => handleEmergencyResponse(reqId, 'REJECT')} disabled={!hasRequestId || !isVerified || Boolean(requestActionBusy[reqId]) || Boolean(respondedAlerts[reqId])} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 disabled:opacity-50">Reject</button>
+                          <button onClick={() => handleEmergencyResponse(reqId, 'ACCEPTED')} disabled={!hasRequestId || !isVerified || Boolean(requestActionBusy[reqId]) || Boolean(respondedAlerts[reqId])} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-700 hover:bg-emerald-600 text-white disabled:opacity-50">{requestActionBusy[reqId] ? 'Saving…' : 'Accept'}</button>
+                          <button onClick={() => handleEmergencyResponse(reqId, 'REJECTED')} disabled={!hasRequestId || !isVerified || Boolean(requestActionBusy[reqId]) || Boolean(respondedAlerts[reqId])} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 disabled:opacity-50">Reject</button>
                           {!isVerified && <span className="text-xs text-amber-300 self-center">Verify email to respond</span>}
                           {!hasRequestId && <span className="text-xs text-amber-300 self-center">Request ID unavailable; actions disabled</span>}
                         </div>

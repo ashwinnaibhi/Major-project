@@ -1135,7 +1135,7 @@ def list_requests(user: dict = Depends(get_current_user),
     else:
         # Donor: show EMERGENCY/HIGH requests matching their blood group
         donor = conn.execute(
-            "SELECT blood_group FROM donors WHERE user_id = ? OR LOWER(email) = LOWER(?)",
+            "SELECT id, blood_group FROM donors WHERE user_id = ? OR LOWER(email) = LOWER(?)",
             (user["id"], user["email"])
         ).fetchone()
         if not donor:
@@ -1143,10 +1143,21 @@ def list_requests(user: dict = Depends(get_current_user),
         bg = donor["blood_group"]
         compatible = BLOOD_COMPATIBILITY.get(bg, [bg])
         ph = ",".join(["?"] * len(compatible))
-        rows = conn.execute(
-            f"SELECT * FROM blood_requests WHERE blood_group IN ({ph}) AND status = 'PENDING' ORDER BY request_date DESC",
-            compatible
-        ).fetchall()
+        try:
+            rows = conn.execute(
+                f"""SELECT r.*, err.response AS donor_response
+                    FROM blood_requests r
+                    LEFT JOIN emergency_request_responses err
+                      ON err.request_id = r.id AND err.donor_id = ?
+                    WHERE r.blood_group IN ({ph}) AND r.status = 'PENDING'
+                    ORDER BY r.request_date DESC""",
+                [str(donor["id"])] + list(compatible)
+            ).fetchall()
+        except Exception:
+            rows = conn.execute(
+                f"SELECT * FROM blood_requests WHERE blood_group IN ({ph}) AND status = 'PENDING' ORDER BY request_date DESC",
+                compatible
+            ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -1231,9 +1242,16 @@ def respond_to_request(request_id: int, payload: RequestResponsePayload,
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
 
-    action = payload.action.upper()
-    if action not in ("ACCEPTED", "REJECTED"):
+    raw_action = (payload.action or "").strip().upper()
+    action_map = {
+        "ACCEPT": "ACCEPTED",
+        "ACCEPTED": "ACCEPTED",
+        "REJECT": "REJECTED",
+        "REJECTED": "REJECTED",
+    }
+    if raw_action not in action_map:
         raise HTTPException(status_code=400, detail="action must be ACCEPTED or REJECTED")
+    action = action_map[raw_action]
 
     donor = conn.execute(
         "SELECT * FROM donors WHERE user_id = ? OR LOWER(email) = LOWER(?)",
@@ -1248,12 +1266,25 @@ def respond_to_request(request_id: int, payload: RequestResponsePayload,
         conn.execute(
             """INSERT INTO emergency_request_responses
                  (request_id, donor_id, response, created_at)
-               VALUES (?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(request_id, donor_id) DO UPDATE SET
+                 response = excluded.response,
+                 created_at = excluded.created_at""",
             (request_id, str(donor["id"]), action, now_iso)
         )
         conn.commit()
     except Exception:
-        conn.rollback()
+        try:
+            now_iso = datetime.datetime.utcnow().isoformat(sep=" ", timespec="seconds")
+            conn.execute(
+                """INSERT OR REPLACE INTO emergency_request_responses
+                     (request_id, donor_id, response, created_at)
+                   VALUES (?, ?, ?, ?)""",
+                (request_id, str(donor["id"]), action, now_iso)
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
 
     return {
         "success": True,
