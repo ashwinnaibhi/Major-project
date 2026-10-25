@@ -111,6 +111,8 @@ class ProductionArchitectureTestCase(unittest.TestCase):
                 )
                 self.assertFalse(res["sent"])
                 self.assertEqual(res["delivery_status"], "FAILED")
+                self.assertEqual(res["error_type"], "BREVO_IP_UNAUTHORIZED")
+                self.assertEqual(res.get("detected_unauthorized_ip"), "2001:db8::1")
                 self.assertIn("Brevo IP Whitelisting active", res["error"])
 
     def test_05_resend_https_delivery_success(self):

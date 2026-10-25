@@ -803,17 +803,44 @@ def send_verification_brevo_api(*, recipient_email: str, recipient_name: str, ra
                 "verify_link": verify_link,
             }
     except urllib.error.HTTPError as exc:
-        err_body = exc.read().decode("utf-8", errors="ignore")
-        hint = " (Brevo IP Whitelisting active: please disable Authorized IPs restriction at https://app.brevo.com/security/authorised_ips or switch to Resend/SMTP)" if "unrecognised IP address" in err_body else ""
-        return {
+        raw_body = exc.read().decode("utf-8", errors="ignore")
+        clean_msg = raw_body
+        try:
+            parsed = json.loads(raw_body)
+            if isinstance(parsed, dict) and parsed.get("message"):
+                clean_msg = parsed["message"]
+        except Exception:
+            pass
+
+        is_ip_unauthorized = (
+            exc.code == 401
+            and any(phrase in raw_body.lower() for phrase in ["unrecognised ip address", "unrecognized ip address", "authorised ip", "authorized ip"])
+        )
+        if is_ip_unauthorized:
+            error_type = "BREVO_IP_UNAUTHORIZED"
+            hint = " (Brevo IP Whitelisting active: please disable Authorized IPs restriction at https://app.brevo.com/security/authorised_ips or switch to Resend/SMTP)"
+            error_message = f"Brevo HTTPS delivery failed (HTTP 401): {clean_msg}{hint}"
+        elif exc.code == 401:
+            error_type = "BREVO_INVALID_API_KEY"
+            error_message = f"Brevo HTTPS delivery failed (HTTP 401): {clean_msg}. Please check BREVO_API_KEY configuration."
+        else:
+            error_type = f"HTTPError_{exc.code}"
+            error_message = f"Brevo HTTPS delivery failed (HTTP {exc.code}): {clean_msg}"
+
+        result = {
             "sent": False,
             "recipient": recipient_email,
             "delivery_status": "FAILED",
             "provider": "brevo_https",
             "connection_stage": "HTTPS_API_CALL",
-            "error_type": f"HTTPError_{exc.code}",
-            "error": f"Brevo HTTPS delivery failed (HTTP {exc.code}): {err_body}{hint}",
+            "error_type": error_type,
+            "error": error_message,
         }
+        if is_ip_unauthorized:
+            ip_match = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b|[0-9a-fA-F:]+:[0-9a-fA-F:]+', clean_msg)
+            if ip_match:
+                result["detected_unauthorized_ip"] = ip_match.group(0)
+        return result
     except Exception as exc:
         return {
             "sent": False,
@@ -999,6 +1026,9 @@ def send_transactional_email(*, recipient_email: str, recipient_name: str, subje
         return SubmissionResult("SUBMITTED", provider_message_id=str(message_id), http_status=200)
     except urllib.error.HTTPError as exc:
         code = int(exc.code)
+        raw_body = exc.read().decode("utf-8", errors="ignore") if hasattr(exc, "read") else ""
+        if code == 401 and any(phrase in raw_body.lower() for phrase in ["unrecognised ip address", "unrecognized ip address"]):
+            return SubmissionResult("FAILED", error_code="BREVO_IP_UNAUTHORIZED", http_status=401)
         retry_after_seconds = None
         retry_header = exc.headers.get("Retry-After") if exc.headers else None
         if retry_header:

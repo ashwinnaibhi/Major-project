@@ -62,7 +62,9 @@ class TestEmailVerification(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         import server
+        import database
         server.DATABASE_PATH = ORIGINAL_DB_PATH
+        database.DATABASE_PATH = ORIGINAL_DB_PATH
         os.environ.pop("BLOODBANK_DB_FILE", None)
         shutil.rmtree(TEMP_DIR, ignore_errors=True)
 
