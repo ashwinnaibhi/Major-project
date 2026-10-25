@@ -18,3 +18,9 @@ venv/
 *.db-shm
 *.backup
 .neon
+
+.agents/
+HAEMOPULSE_FIX_REPORT.md
+IMPLEMENTATION_REPORT.md
+MIGRATION_ROLLBACK.md
+backend/bloodbank.db.pre_migration_backup
