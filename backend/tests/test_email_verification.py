@@ -736,5 +736,85 @@ class TestEmailVerification(unittest.TestCase):
         self.assertIn("verify your email", app_res.json()["detail"].lower())
 
 
+    def test_28_email_diagnostics_endpoint_safe(self):
+        """Diagnostic endpoint returns structured configuration and never exposes private credentials."""
+        with patch.dict(os.environ, {
+            "BREVO_API_KEY": "xkeysib-secret99887766554433221100",
+            "RESEND_API_KEY": "re_topsecretapikey123456",
+            "SMTP_PASS": "16charpassword12"
+        }):
+            res = self.client.get("/api/v1/auth/email-diagnostics?probe=false")
+            self.assertEqual(res.status_code, 200)
+            data = res.json()
+
+            # Providers configured
+            self.assertTrue(data["brevo"]["configured"])
+            self.assertTrue(data["resend"]["configured"])
+
+            # Never leak full keys or passwords
+            body_str = res.text
+            self.assertNotIn("xkeysib-secret99887766554433221100", body_str)
+            self.assertNotIn("re_topsecretapikey123456", body_str)
+            self.assertNotIn("16charpassword12", body_str)
+
+            # Masked prefixes are safe
+            self.assertEqual(data["brevo"]["key_prefix"], "xkeysib-...")
+            self.assertEqual(data["resend"]["key_prefix"], "re_top...")
+
+    def test_29_resend_verification_resend_api_auth_failure(self):
+        """Resend returns HTTP 502 with actionable guidance when Resend API key is invalid."""
+        conn = sqlite3.connect(TEST_DB_PATH)
+        conn.execute(
+            """INSERT INTO users (name, email, password, phone, role, is_verified, last_verification_email_sent_at)
+               VALUES ('Resend Test User', 'resend_auth_test@example.com', 'hash', '1234567890', 'ROLE_DONOR', 0, NULL)"""
+        )
+        conn.commit()
+        conn.close()
+
+        mock_delivery = {
+            "sent": False,
+            "recipient": "resend_auth_test@example.com",
+            "delivery_status": "FAILED",
+            "provider": "resend_https",
+            "error_type": "RESEND_AUTHENTICATION_FAILED",
+            "error": "Resend HTTPS delivery failed (HTTP 401): API key invalid"
+        }
+
+        with patch("server.send_verification_email", return_value=mock_delivery):
+            res = self.client.post("/api/v1/auth/resend-verification", json={"email": "resend_auth_test@example.com"})
+            self.assertEqual(res.status_code, 502)
+            data = res.json()
+            self.assertFalse(data["success"])
+            self.assertIn("RESEND_API_KEY", data["message"])
+
+    def test_30_resend_verification_unauthorized_ip_shows_ip_in_message(self):
+        """When Brevo detects an unauthorized IP, the IP is displayed in the user-facing message."""
+        conn = sqlite3.connect(TEST_DB_PATH)
+        conn.execute(
+            """INSERT INTO users (name, email, password, phone, role, is_verified, last_verification_email_sent_at)
+               VALUES ('IP Shown User', 'ip_shown_test@example.com', 'hash', '1234567890', 'ROLE_DONOR', 0, NULL)"""
+        )
+        conn.commit()
+        conn.close()
+
+        mock_delivery = {
+            "sent": False,
+            "recipient": "ip_shown_test@example.com",
+            "delivery_status": "FAILED",
+            "provider": "brevo_https",
+            "error_type": "BREVO_IP_UNAUTHORIZED",
+            "error": "Brevo HTTPS delivery failed (HTTP 401): unrecognized IP",
+            "detected_unauthorized_ip": "74.220.48.235"
+        }
+
+        with patch("server.send_verification_email", return_value=mock_delivery):
+            res = self.client.post("/api/v1/auth/resend-verification", json={"email": "ip_shown_test@example.com"})
+            self.assertEqual(res.status_code, 502)
+            data = res.json()
+            self.assertFalse(data["success"])
+            self.assertIn("74.220.48.235", data["message"])
+            self.assertIn("Authorized IPs", data["message"])
+
+
 if __name__ == "__main__":
     unittest.main()

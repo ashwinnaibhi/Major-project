@@ -34,6 +34,7 @@ from email_service import (
     validate_smtp_configuration,
     external_messages_enabled,
     get_smtp_diagnostics,
+    get_email_service_diagnostics,
     send_transactional_email,
     render_donor_emergency_email,
     render_acceptance_email,
@@ -782,14 +783,29 @@ def resend_verification(payload: ResendVerificationPayload,
         raw_error = delivery.get("error", "")
 
         if error_type == "BREVO_IP_UNAUTHORIZED":
+            detected_ip = delivery.get("detected_unauthorized_ip")
+            ip_str = f" ({detected_ip})" if detected_ip else ""
             user_msg = (
-                "Email delivery failed: Brevo rejected the connection because the server outbound IP is not authorized. "
+                f"Email delivery failed: Brevo rejected the connection because the server outbound IP{ip_str} is not authorized. "
                 "The administrator must disable the 'Authorized IPs' restriction at https://app.brevo.com/security/authorised_ips in the Brevo dashboard."
             )
         elif error_type == "BREVO_INVALID_API_KEY":
             user_msg = (
                 "Email delivery failed: Brevo API key authentication failed. "
                 "Please verify the BREVO_API_KEY configuration in Render."
+            )
+        elif error_type == "RESEND_AUTHENTICATION_FAILED":
+            user_msg = (
+                "Email delivery failed: Resend API key authentication failed. "
+                "Please verify the RESEND_API_KEY configuration in Render."
+            )
+        elif error_type == "RESEND_API_KEY_MISSING":
+            user_msg = (
+                "Email delivery failed: Resend provider was selected but RESEND_API_KEY is not configured in Render."
+            )
+        elif error_type == "BREVO_API_KEY_MISSING":
+            user_msg = (
+                "Email delivery failed: Brevo provider was selected but BREVO_API_KEY is not configured in Render."
             )
         else:
             user_msg = raw_error or "Failed to deliver verification email. Please check your email configuration or try again later."
@@ -803,9 +819,17 @@ def resend_verification(payload: ResendVerificationPayload,
 
 
 @app.get("/api/v1/auth/smtp-status")
-def get_smtp_status(check_auth: bool = Query(False)):
-    """Diagnostic check for SMTP configuration, network reachability, and optional credential auth without exposing secrets."""
-    return get_smtp_diagnostics(check_auth=check_auth)
+def get_smtp_status(check_auth: bool = Query(False), probe_email: bool = Query(True)):
+    """Diagnostic check for SMTP and Email Provider configuration without exposing secrets."""
+    smtp_diag = get_smtp_diagnostics(check_auth=check_auth)
+    smtp_diag["email_service"] = get_email_service_diagnostics(probe=probe_email)
+    return smtp_diag
+
+
+@app.get("/api/v1/auth/email-diagnostics")
+def get_email_diagnostics_endpoint(probe: bool = Query(True)):
+    """Safe diagnostic endpoint for Email Provider configuration and live connectivity probe."""
+    return get_email_service_diagnostics(probe=probe)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

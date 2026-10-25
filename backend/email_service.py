@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import os
 import re
 import smtplib
@@ -23,6 +24,8 @@ from email.utils import parsedate_to_datetime, parseaddr
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
+
+logger = logging.getLogger("haemopulse.email")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURATION & ENVIRONMENT LOADER
@@ -185,6 +188,179 @@ def get_smtp_diagnostics(*, check_auth: bool = False) -> dict:
         "overall_status": overall_status,
         "status_summary": status_summary,
     }
+
+
+
+def probe_brevo_account(api_key: str, timeout_seconds: int = 5) -> dict:
+    """Safe read-only probe of Brevo account status via GET /v3/account.
+    Never exposes API keys, authorization headers, or sensitive payloads.
+    """
+    if not api_key:
+        return {"status": "NOT_CONFIGURED", "http_status": None, "error_type": "NO_KEY"}
+    req = urllib.request.Request(
+        "https://api.brevo.com/v3/account",
+        method="GET",
+        headers={"accept": "application/json", "api-key": api_key},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+            data = json.loads(resp.read().decode("utf-8")) if resp else {}
+            acct_email = data.get("email", "")
+            masked = ""
+            if "@" in acct_email:
+                parts = acct_email.split("@", 1)
+                masked = f"{parts[0][0]}***@{parts[1]}"
+            return {
+                "status": "VALID",
+                "http_status": 200,
+                "error_type": None,
+                "account_email_masked": masked,
+                "company_name": data.get("companyName"),
+                "ip_restriction_blocking": False,
+            }
+    except urllib.error.HTTPError as exc:
+        raw_body = exc.read().decode("utf-8", errors="ignore")
+        clean_msg = raw_body
+        try:
+            parsed = json.loads(raw_body)
+            if isinstance(parsed, dict) and parsed.get("message"):
+                clean_msg = parsed["message"]
+        except Exception:
+            pass
+        is_ip_unauth = (
+            exc.code == 401
+            and any(phrase in raw_body.lower() for phrase in ["unrecognised ip address", "unrecognized ip address", "authorised ip", "authorized ip"])
+        )
+        ip_match = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b|[0-9a-fA-F:]+:[0-9a-fA-F:]+', clean_msg) if is_ip_unauth else None
+        detected_ip = ip_match.group(0) if ip_match else None
+
+        error_type = "BREVO_IP_UNAUTHORIZED" if is_ip_unauth else ("BREVO_INVALID_API_KEY" if exc.code == 401 else f"HTTP_{exc.code}")
+        return {
+            "status": "REJECTED",
+            "http_status": exc.code,
+            "error_type": error_type,
+            "is_ip_unauthorized": is_ip_unauth,
+            "detected_unauthorized_ip": detected_ip,
+            "sanitized_error": clean_msg[:200],
+        }
+    except Exception as exc:
+        return {
+            "status": "CONNECTION_ERROR",
+            "http_status": None,
+            "error_type": type(exc).__name__,
+            "sanitized_error": str(exc)[:200],
+        }
+
+
+def probe_resend_account(api_key: str, timeout_seconds: int = 5) -> dict:
+    """Safe read-only probe of Resend API key status via GET /api-keys.
+    Never exposes API keys, authorization headers, or sensitive payloads.
+    """
+    if not api_key:
+        return {"status": "NOT_CONFIGURED", "http_status": None, "error_type": "NO_KEY"}
+    req = urllib.request.Request(
+        "https://api.resend.com/api-keys",
+        method="GET",
+        headers={"Authorization": f"Bearer {api_key}", "User-Agent": "haemopulse/1.0", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+            data = json.loads(resp.read().decode("utf-8")) if resp else {}
+            return {
+                "status": "VALID",
+                "http_status": 200,
+                "error_type": None,
+                "valid": True,
+            }
+    except urllib.error.HTTPError as exc:
+        raw_body = exc.read().decode("utf-8", errors="ignore")
+        clean_msg = raw_body
+        try:
+            parsed = json.loads(raw_body)
+            if isinstance(parsed, dict) and parsed.get("message"):
+                clean_msg = parsed["message"]
+        except Exception:
+            pass
+        error_type = "RESEND_AUTHENTICATION_FAILED" if exc.code in (401, 403) else f"HTTP_{exc.code}"
+        return {
+            "status": "REJECTED",
+            "http_status": exc.code,
+            "error_type": error_type,
+            "valid": False,
+            "sanitized_error": clean_msg[:200],
+        }
+    except Exception as exc:
+        return {
+            "status": "CONNECTION_ERROR",
+            "http_status": None,
+            "error_type": type(exc).__name__,
+            "sanitized_error": str(exc)[:200],
+        }
+
+
+def get_email_service_diagnostics(*, probe: bool = False) -> dict:
+    """Safe diagnostic report of email providers (Brevo, Resend, Gmail SMTP).
+    Never exposes passwords, tokens, full API keys, or private secrets.
+    """
+    load_haemopulse_env()
+    method = os.getenv("EMAIL_DELIVERY_METHOD", "").strip().lower()
+    ext_enabled = external_messages_enabled()
+    raw_disable = os.getenv("HAEMOPULSE_DISABLE_EXTERNAL_MESSAGES")
+
+    brevo_key = os.getenv("BREVO_API_KEY", "").strip()
+    resend_key = os.getenv("RESEND_API_KEY", "").strip()
+    smtp_configured, smtp_reason = validate_smtp_configuration()
+
+    if method == "brevo":
+        active_provider = "brevo_https"
+    elif method == "resend":
+        active_provider = "resend_https"
+    elif method == "smtp":
+        active_provider = "smtp"
+    elif resend_key:
+        active_provider = "resend_https"
+    elif brevo_key and not os.getenv("SMTP_PASS", "").strip():
+        active_provider = "brevo_https"
+    else:
+        active_provider = "smtp"
+
+    brevo_info = {
+        "configured": bool(brevo_key),
+        "key_prefix": (brevo_key[:8] + "...") if len(brevo_key) >= 8 else ("present" if brevo_key else "missing"),
+        "key_length": len(brevo_key),
+        "sender": os.getenv("MAIL_FROM", "").strip() or "noreply@haemopulse.org",
+    }
+
+    resend_info = {
+        "configured": bool(resend_key),
+        "key_prefix": (resend_key[:6] + "...") if len(resend_key) >= 6 else ("present" if resend_key else "missing"),
+        "key_length": len(resend_key),
+        "from_email": os.getenv("RESEND_FROM", "").strip() or os.getenv("MAIL_FROM", "").strip() or "onboarding@resend.dev",
+    }
+
+    report = {
+        "external_messages_enabled": ext_enabled,
+        "haemopulse_disable_external_messages_raw": raw_disable,
+        "email_delivery_method_env": method or "(not set, using auto-detection)",
+        "active_provider": active_provider,
+        "brevo": brevo_info,
+        "resend": resend_info,
+        "smtp": {
+            "configured": smtp_configured,
+            "status_message": smtp_reason,
+            "host": os.getenv("SMTP_HOST", "smtp.gmail.com").strip(),
+            "port": int(os.getenv("SMTP_PORT", "587").strip()) if os.getenv("SMTP_PORT", "587").strip().isdigit() else 587,
+            "user_present": bool(os.getenv("SMTP_USER", "").strip()),
+        }
+    }
+
+    if probe:
+        if brevo_key:
+            report["brevo"]["probe"] = probe_brevo_account(brevo_key)
+        if resend_key:
+            report["resend"]["probe"] = probe_resend_account(resend_key)
+
+    return report
 
 
 BREVO_SEND_URL = "https://api.brevo.com/v3/smtp/email"
@@ -816,6 +992,8 @@ def send_verification_brevo_api(*, recipient_email: str, recipient_name: str, ra
             exc.code == 401
             and any(phrase in raw_body.lower() for phrase in ["unrecognised ip address", "unrecognized ip address", "authorised ip", "authorized ip"])
         )
+        ip_match = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b|[0-9a-fA-F:]+:[0-9a-fA-F:]+', clean_msg) if is_ip_unauthorized else None
+        detected_ip = ip_match.group(0) if ip_match else None
         if is_ip_unauthorized:
             error_type = "BREVO_IP_UNAUTHORIZED"
             hint = " (Brevo IP Whitelisting active: please disable Authorized IPs restriction at https://app.brevo.com/security/authorised_ips or switch to Resend/SMTP)"
@@ -827,19 +1005,63 @@ def send_verification_brevo_api(*, recipient_email: str, recipient_name: str, ra
             error_type = f"HTTPError_{exc.code}"
             error_message = f"Brevo HTTPS delivery failed (HTTP {exc.code}): {clean_msg}"
 
+        logger.warning(
+
+
+            "Brevo delivery failure: status=%s error_type=%s ip_unauthorized=%s detected_ip=%s",
+
+
+            exc.code,
+
+
+            error_type,
+
+
+            is_ip_unauthorized,
+
+
+            detected_ip or "none",
+
+
+        )
+
+
         result = {
+
+
             "sent": False,
+
+
             "recipient": recipient_email,
+
+
             "delivery_status": "FAILED",
+
+
             "provider": "brevo_https",
+
+
             "connection_stage": "HTTPS_API_CALL",
+
+
+            "api_key_configured": True,
+
+
+            "http_status": exc.code,
+
+
             "error_type": error_type,
+
+
+            "is_ip_unauthorized": is_ip_unauthorized,
+
+
             "error": error_message,
+
+
         }
-        if is_ip_unauthorized:
-            ip_match = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b|[0-9a-fA-F:]+:[0-9a-fA-F:]+', clean_msg)
-            if ip_match:
-                result["detected_unauthorized_ip"] = ip_match.group(0)
+        if detected_ip:
+            result["detected_unauthorized_ip"] = detected_ip
         return result
     except Exception as exc:
         return {
@@ -924,14 +1146,25 @@ def send_verification_resend_api(*, recipient_email: str, recipient_name: str, r
             }
     except urllib.error.HTTPError as exc:
         err_body = exc.read().decode("utf-8", errors="ignore")
+        clean_msg = err_body
+        try:
+            parsed = json.loads(err_body)
+            if isinstance(parsed, dict) and parsed.get("message"):
+                clean_msg = parsed["message"]
+        except Exception:
+            pass
+        error_type = "RESEND_AUTHENTICATION_FAILED" if exc.code in (401, 403) else f"HTTP_{exc.code}"
+        logger.warning("Resend delivery failure: status=%s error_type=%s", exc.code, error_type)
         return {
             "sent": False,
             "recipient": recipient_email,
             "delivery_status": "FAILED",
             "provider": "resend_https",
             "connection_stage": "HTTPS_API_CALL",
-            "error_type": f"HTTPError_{exc.code}",
-            "error": f"Resend HTTPS delivery failed (HTTP {exc.code}): {err_body}",
+            "api_key_configured": True,
+            "http_status": exc.code,
+            "error_type": error_type,
+            "error": f"Resend HTTPS delivery failed (HTTP {exc.code}): {clean_msg}",
         }
     except Exception as exc:
         return {
