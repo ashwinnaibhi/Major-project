@@ -239,12 +239,15 @@ export default function App() {
     switch (activeTab) {
       case 'dashboard':
         if (activeRole === 'HOSPITAL') {
+          const isHospitalOrAdmin = ['HOSPITAL', 'ROLE_HOSPITAL', 'ADMIN', 'ROLE_ADMIN'].includes(
+            String(currentUser?.role || '').toUpperCase()
+          );
           return (
             <HospitalDashboard 
               donorsList={donorsList} 
               requestsList={requestsList} 
               onRequestCreated={handleRequestCreated}
-              currentUser={currentUser}
+              currentUser={isHospitalOrAdmin ? currentUser : null}
             />
           );
         }

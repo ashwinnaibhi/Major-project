@@ -78,8 +78,18 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
   const fulfilledCount = requestsList.filter(r => r.status === 'APPROVED' || r.status === 'ALLOCATED').length;
   const emergencyCount = requestsList.filter(r => (r.urgency || r.urgency_level) === 'EMERGENCY').length;
 
+  const isHospitalAuthorized = Boolean(
+    currentUser?.token &&
+    ['HOSPITAL', 'ROLE_HOSPITAL', 'ADMIN', 'ROLE_ADMIN'].includes(
+      String(currentUser?.role || '').toUpperCase()
+    )
+  );
+
   const loadHospitalDonations = useCallback(async () => {
-    if (!currentUser?.token) return;
+    if (!currentUser?.token || !isHospitalAuthorized) {
+      setHospitalDonations([]);
+      return;
+    }
     try {
       const res = await fetch(`${API_BASE}/api/v1/hospitals/donations`, {
         headers: { Authorization: `Bearer ${currentUser.token}` }
@@ -87,9 +97,13 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) setHospitalDonations(data);
+      } else if (res.status === 403 || res.status === 401) {
+        setHospitalDonations([]);
       }
-    } catch (_) {}
-  }, [currentUser?.token]);
+    } catch (_) {
+      setHospitalDonations([]);
+    }
+  }, [currentUser?.token, isHospitalAuthorized]);
 
   useEffect(() => {
     loadHospitalDonations();
@@ -98,6 +112,10 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
   const handleRecordDonation = async (e) => {
     e.preventDefault();
     setDonationFormError('');
+    if (!isHospitalAuthorized || !currentUser?.token) {
+      setDonationFormError('Sign in with an authorized hospital or administrator account to record donations.');
+      return;
+    }
     setIsSubmittingDonation(true);
     try {
       const res = await fetch(`${API_BASE}/api/v1/hospitals/donations/record`, {
@@ -142,6 +160,10 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
   const handleCreateRequest = async (e) => {
     e.preventDefault();
     setFormError('');
+    if (!isHospitalAuthorized || !currentUser?.token) {
+      setFormError('Sign in with an authorized hospital account to create a requisition.');
+      return;
+    }
     if (!newRequest.hospital_name.trim()) { setFormError('Hospital name is required.'); return; }
     if (!newRequest.hospital_address.trim()) { setFormError('Hospital address is required.'); return; }
     if (!Number.isInteger(Number(newRequest.units)) || Number(newRequest.units) <= 0 || Number(newRequest.units) > 1000) {
@@ -377,7 +399,11 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
         <div className="overflow-x-auto">
           {hospitalDonations.length === 0 ? (
             <div className="p-8 text-center text-slate-500 text-xs">
-              No completed donations recorded yet. Click "Record Completed Donation" after collecting blood from a donor.
+              {!isHospitalAuthorized ? (
+                <span>Hospital sign-in required to view facility donation records.</span>
+              ) : (
+                <span>No completed donations recorded yet. Click "Record Completed Donation" after collecting blood from a donor.</span>
+              )}
             </div>
           ) : (
             <table className="w-full text-left text-xs text-slate-300">

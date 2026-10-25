@@ -1,13 +1,15 @@
 """
-HaemoPulse Emergency Blood Request Response Tests
+HaemoPulse Emergency Blood Request Response Tests & Hospital Endpoint Role Tests
 Verifies:
 1. Canonical actions 'ACCEPTED' and 'REJECTED' succeed (HTTP 200) and persist to database.
 2. Shortened actions 'ACCEPT' and 'REJECT' are properly normalized to canonical form and succeed (HTTP 200).
 3. Invalid actions are rejected with HTTP 400 ('action must be ACCEPTED or REJECTED').
 4. Idempotency: Duplicate or updated responses succeed without violating unique constraints.
-5. Role-based security: Non-donors receive HTTP 403.
+5. Role-based security: Non-donors receive HTTP 403 on emergency response.
 6. Non-existent requests receive HTTP 404.
 7. Donor requests list (GET /api/v1/requests) accurately populates 'donor_response'.
+8. GET /api/v1/requests/{request_id}/response correctly returns HTTP 405 Method Not Allowed.
+9. GET /api/v1/hospitals/donations strictly denies donors (HTTP 403) while allowing authorized hospitals (HTTP 200).
 """
 
 from __future__ import annotations
@@ -181,6 +183,25 @@ class EmergencyResponseTestCase(unittest.TestCase):
         req_item = next((r for r in requests if r["id"] == self.request_id), None)
         self.assertIsNotNone(req_item)
         self.assertEqual(req_item.get("donor_response"), "ACCEPTED")
+
+    def test_09_get_request_response_returns_405_method_not_allowed(self):
+        """GET /api/v1/requests/{request_id}/response is not allowed and returns HTTP 405."""
+        headers = {"Authorization": f"Bearer {self.donor_token}"}
+        res = client.get(f"/api/v1/requests/{self.request_id}/response", headers=headers)
+        self.assertEqual(res.status_code, 405)
+        self.assertIn("method not allowed", res.text.lower())
+
+    def test_10_hospital_donations_role_restrictions(self):
+        """Donors cannot access hospital donations (403), while authorized hospitals succeed (200)."""
+        # 1. Donor attempting to read hospital donations receives 403 Forbidden
+        donor_res = client.get("/api/v1/hospitals/donations", headers={"Authorization": f"Bearer {self.donor_token}"})
+        self.assertEqual(donor_res.status_code, 403)
+        self.assertIn("Hospital access only", donor_res.json().get("detail", ""))
+
+        # 2. Authorized hospital receives 200 OK
+        hosp_res = client.get("/api/v1/hospitals/donations", headers={"Authorization": f"Bearer {self.hospital_token}"})
+        self.assertEqual(hosp_res.status_code, 200)
+        self.assertIsInstance(hosp_res.json(), list)
 
 
 if __name__ == "__main__":
