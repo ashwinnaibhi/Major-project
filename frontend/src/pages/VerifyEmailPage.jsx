@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { CheckCircle2, XCircle, Loader2, ArrowRight } from 'lucide-react';
+import { CheckCircle2, XCircle, Loader2, ArrowRight, RefreshCw, Mail } from 'lucide-react';
+
+import { getApiBaseUrl } from '../api/config';
+const API_BASE = getApiBaseUrl();
 
 export default function VerifyEmailPage({ onVerified }) {
-  const [status, setStatus] = useState('loading'); // 'loading' | 'success' | 'error'
+  const [status, setStatus] = useState('loading'); // 'loading' | 'success' | 'error' | 'expired'
   const [message, setMessage] = useState('');
 
   useEffect(() => {
@@ -11,24 +14,40 @@ export default function VerifyEmailPage({ onVerified }) {
 
     if (!token) {
       setStatus('error');
-      setMessage('No verification token provided in the URL.');
+      setMessage('No verification token provided in the URL. Please click the full link in your verification email.');
       return;
     }
 
     const verifyToken = async () => {
       try {
-        const res = await fetch(`http://localhost:8080/api/v1/auth/verify-email?token=${encodeURIComponent(token)}`);
-        const data = await res.json();
+        const res = await fetch(`${API_BASE}/api/v1/auth/verify-email?token=${encodeURIComponent(token)}`);
+        const data = await res.json().catch(() => ({}));
         if (res.ok && data.success) {
           setStatus('success');
-          setMessage(data.message || 'Your email has been successfully verified!');
+          setMessage(data.message || 'Your email address has been successfully verified!');
+          // Immediately update local session so donor portal displays verified status without re-login
+          try {
+            const saved = JSON.parse(localStorage.getItem('haemopulse_user') || 'null');
+            if (saved) {
+              saved.is_verified = true;
+              localStorage.setItem('haemopulse_user', JSON.stringify(saved));
+            }
+          } catch (e) {}
+          if (typeof onVerified === 'function') {
+            try { onVerified(); } catch (e) {}
+          }
         } else {
-          setStatus('error');
-          setMessage(data.detail || data.message || 'Verification token is invalid or has expired.');
+          const detail = data.detail || data.message || 'Verification token is invalid or has expired.';
+          if (detail.toLowerCase().includes('expire')) {
+            setStatus('expired');
+          } else {
+            setStatus('error');
+          }
+          setMessage(detail);
         }
       } catch (err) {
         setStatus('error');
-        setMessage('Could not connect to the authentication server. Please ensure the backend is running.');
+        setMessage('Could not connect to the authentication server. Please ensure the HaemoPulse backend is running.');
       }
     };
 
@@ -53,6 +72,11 @@ export default function VerifyEmailPage({ onVerified }) {
               <CheckCircle2 className="w-8 h-8" />
             </div>
           )}
+          {status === 'expired' && (
+            <div className="w-16 h-16 rounded-2xl bg-amber-950/80 border border-amber-800 flex items-center justify-center text-amber-400">
+              <RefreshCw className="w-8 h-8" />
+            </div>
+          )}
           {status === 'error' && (
             <div className="w-16 h-16 rounded-2xl bg-rose-950/80 border border-rose-800 flex items-center justify-center text-rose-400">
               <XCircle className="w-8 h-8" />
@@ -64,12 +88,25 @@ export default function VerifyEmailPage({ onVerified }) {
           <h2 className="text-2xl font-black text-white">
             {status === 'loading' && 'Verifying Email...'}
             {status === 'success' && 'Email Verified!'}
+            {status === 'expired' && 'Token Expired'}
             {status === 'error' && 'Verification Failed'}
           </h2>
           <p className="text-xs text-slate-400 leading-relaxed">
             {message || 'Please wait while we validate your security token...'}
           </p>
         </div>
+
+        {status === 'success' && (
+          <div className="p-3 rounded-xl bg-emerald-950/40 border border-emerald-800/60 text-emerald-300 text-xs">
+            Your account is now activated. Appointment booking and emergency donation features are unlocked.
+          </div>
+        )}
+
+        {status === 'expired' && (
+          <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-800/60 text-amber-300 text-xs">
+            Security tokens expire after 30 minutes. Sign in to your Donor Dashboard and click "Resend Verification Link" to receive a fresh token.
+          </div>
+        )}
 
         <div>
           <button

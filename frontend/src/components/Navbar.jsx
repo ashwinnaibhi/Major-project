@@ -1,14 +1,15 @@
 import React from 'react';
 import { Droplet, ShieldAlert, User, Cpu, LogOut, LogIn } from 'lucide-react';
 
-export default function Navbar({ activeRole, handleRoleChange, currentUser, onLogout, onOpenDonorPortal }) {
+export default function Navbar({ activeRole = 'DONOR', handleRoleChange, currentUser, onLogout, onOpenDonorPortal }) {
+  const safeRole = activeRole || 'DONOR';
   const isAuthenticated = Boolean(currentUser?.token && currentUser?.isLoggedIn);
   const authenticatedRole = currentUser?.role;
-  const isViewingOwnRole = isAuthenticated && authenticatedRole === activeRole;
+  const isViewingOwnRole = isAuthenticated && authenticatedRole === safeRole;
   const name = isViewingOwnRole ? (currentUser.name || currentUser.email || 'Signed-in user') : 'Sign-in required';
   const title = isViewingOwnRole
     ? `${authenticatedRole} account`
-    : `Viewing ${activeRole.toLowerCase()} interface`;
+    : `Viewing ${String(safeRole).toLowerCase()} interface`;
 
   return (
     <header className="sticky top-0 z-40 glass-panel border-b border-slate-800 px-4 md:px-6 py-3">
@@ -40,7 +41,6 @@ export default function Navbar({ activeRole, handleRoleChange, currentUser, onLo
               { id: 'ADMIN', label: 'Admin' },
               { id: 'HOSPITAL', label: 'Hospital' },
               { id: 'DONOR', label: 'Donor' },
-              { id: 'STAFF', label: 'Staff' }
             ].map((role) => (
               <button
                 key={role.id}
@@ -62,10 +62,13 @@ export default function Navbar({ activeRole, handleRoleChange, currentUser, onLo
               <p className="text-xs font-semibold text-slate-200 truncate">{name}</p>
               <p className="text-[10px] text-slate-400">{title}</p>
             </div>
-            {!isAuthenticated && (
+            {!isAuthenticated && activeRole === 'DONOR' && (
               <button type="button" onClick={onOpenDonorPortal} className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold flex items-center gap-1">
                 <LogIn className="w-3.5 h-3.5" /><span>Donor sign in</span>
               </button>
+            )}
+            {!isAuthenticated && activeRole === 'HOSPITAL' && (
+              <span className="rounded-xl border border-sky-900 bg-sky-950/50 px-2.5 py-1.5 text-xs font-semibold text-sky-200">Hospital sign-in required</span>
             )}
             {isAuthenticated && (
               <button type="button" onClick={onLogout} title="Log out" className="px-2.5 py-1.5 rounded-xl bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800 text-xs font-bold flex items-center gap-1">

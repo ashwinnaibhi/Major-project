@@ -12,7 +12,8 @@ import RequestsView from './pages/RequestsView';
 import AppointmentsView from './pages/AppointmentsView';
 import VerifyEmailPage from './pages/VerifyEmailPage';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+import { getApiBaseUrl } from './api/config';
+const API_BASE = getApiBaseUrl();
 
 function normalizeRole(role) {
   const value = String(role || 'ADMIN').toUpperCase();
@@ -117,16 +118,21 @@ export default function App() {
 
   // Handle Login/Register Success
   const handleAuthSuccess = (authenticatedUser) => {
-    setCurrentUser(authenticatedUser);
-    const targetRole = authenticatedUser.role || 'DONOR';
-    setActiveRole(targetRole);
+    const rawRole = authenticatedUser?.role || 'DONOR';
+    const normalized = normalizeRole(rawRole);
+    const sessionUser = {
+      ...authenticatedUser,
+      role: normalized,
+      isLoggedIn: true
+    };
+    setCurrentUser(sessionUser);
+    setActiveRole(normalized);
 
-    if (targetRole === 'DONOR') {
+    if (normalized === 'DONOR') {
       setActiveTab('donor_dashboard');
     } else {
       setActiveTab('dashboard');
     }
-
   };
 
   // Handle Logout
@@ -220,7 +226,7 @@ export default function App() {
     if (activeRole === 'DONOR' || activeTab.startsWith('donor_')) {
       return (
         <DonorDashboard 
-          currentUser={currentUser?.role === 'DONOR' ? currentUser : null}
+          currentUser={['DONOR', 'ROLE_DONOR'].includes(String(currentUser?.role || '').toUpperCase()) ? currentUser : null}
           requestsList={requestsList} 
           onRefreshRequests={() => refreshRequests(currentUser)}
           onAuthSuccess={handleAuthSuccess}

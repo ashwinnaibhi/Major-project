@@ -3,8 +3,9 @@ import StatCard from '../components/StatCard';
 import MLPredictionBadge from '../components/MLPredictionBadge';
 import { Users, Droplets, AlertOctagon, BrainCircuit, Activity, Trash2, Heart, Clock, Calendar, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
-const ML_API_BASE = import.meta.env.VITE_ML_API_BASE_URL || 'http://localhost:8000';
+import { getApiBaseUrl, getMlServiceUrl } from '../api/config';
+const API_BASE = getApiBaseUrl();
+const ML_API_BASE = getMlServiceUrl();
 
 export default function AdminDashboard({ onNavigate, donorsList = [], requestsList = [], currentUser, onDeleteDonor }) {
   const [searchTerm, setSearchTerm] = useState('');

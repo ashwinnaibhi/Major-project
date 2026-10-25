@@ -11,7 +11,11 @@ from datetime import datetime, timezone
 import pytest
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
+import shutil
 TEST_DB_PATH = str(Path(tempfile.gettempdir()) / f"haemopulse-regression-{os.getpid()}.sqlite3")
+ORIGINAL_DB_PATH = BACKEND_DIR / "bloodbank.db"
+if ORIGINAL_DB_PATH.exists():
+    shutil.copyfile(str(ORIGINAL_DB_PATH), TEST_DB_PATH)
 os.environ["BLOODBANK_DB_FILE"] = TEST_DB_PATH
 os.environ["JWT_SECRET"] = "test-only-secret-do-not-use-in-production-123456789"
 os.environ["HAEMOPULSE_DISABLE_EXTERNAL_MESSAGES"] = "true"

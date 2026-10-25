@@ -8,6 +8,7 @@ dist/
 *.log
 .idea/
 .venv/
+venv/
 
 
 *.db
@@ -16,3 +17,4 @@ dist/
 *.db-wal
 *.db-shm
 *.backup
+.neon

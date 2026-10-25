@@ -17,7 +17,10 @@ Configure these only in a local/backend environment file that is excluded from s
 - `MAIL_FROM_NAME`: display name for new transactional notifications.
 - `SMTP_MAIL_FROM`: sender identity for the pre-existing SMTP email-verification workflow. If omitted, the backend falls back to the legacy `MAIL_FROM` value for compatibility; set it explicitly when the SMTP sender differs from the Brevo sender.
 - `BREVO_WEBHOOK_BEARER_TOKEN`: long random token configured in the Brevo webhook authorization settings.
-- `HAEMOPULSE_DISABLE_EXTERNAL_MESSAGES=true`: safe default; leave true until a separate single-recipient test has been expressly approved.
+- `HAEMOPULSE_DISABLE_EXTERNAL_MESSAGES=true`: master external-delivery switch; leave true until a separate single-recipient test has been expressly approved.
+- `HAEMOPULSE_EMAIL_MODE=mock`: additional fail-closed guard; provider calls require `live` mode and `HAEMOPULSE_ALLOW_LIVE_EMAIL=true`.
+- `HAEMOPULSE_ALLOW_LIVE_EMAIL=false`: separate explicit live-send opt-in; keep false during implementation and automated tests.
+- `HAEMOPULSE_EMAIL_RECIPIENT_ALLOWLIST`: optional comma-separated recipient allowlist for a separately approved test; when non-empty, only listed recipients may be submitted.
 - `FRONTEND_URL`: existing public/local frontend URL used in application links.
 
 Both root and `backend/.env.example` contain placeholders only. Do not put secrets in `VITE_*` variables, frontend source, tests, or ZIP archives. A verified sender/domain and an eligible Brevo account are required before a later live test. The project code does not create a provider account, verify a domain, configure DNS, or send a live test automatically.
@@ -26,7 +29,7 @@ Both root and `backend/.env.example` contain placeholders only. Do not put secre
 
 Brevo's official Free-plan documentation states that the plan has no time limit and includes **300 email sends per day**. Once the daily limit is reached, up to **1,000 additional transactional emails** may be held in a retry queue; email beyond that queue is not delivered. The Free plan includes Brevo branding. This is a quota, not a delivery guarantee. See [Brevo Free-plan limits](https://help.brevo.com/hc/en-us/articles/208580669-FAQs-What-are-the-limits-of-the-Free-plan) and [pricing overview](https://help.brevo.com/hc/en-us/articles/208589409-About-Brevo-s-pricing-plans).
 
-The adapter calls `POST https://api.brevo.com/v3/smtp/email` with an `api-key` header and correlates the response's `messageId`. A registered/verified sender is required; the message ID is used to associate webhook status events. See [Send a transactional email](https://developers.brevo.com/docs/send-a-transactional-email). The webhook endpoint uses the documented bearer-token authentication mode; see [Secure webhook calls](https://developers.brevo.com/docs/secured-webhooks).
+The adapter is fail-closed by default: `HAEMOPULSE_EMAIL_MODE` defaults to `mock`, and provider calls additionally require `HAEMOPULSE_EMAIL_MODE=live`, `HAEMOPULSE_ALLOW_LIVE_EMAIL=true`, and `HAEMOPULSE_DISABLE_EXTERNAL_MESSAGES=false`. During implementation/testing, keep the disable flag true and the live opt-in false. The optional recipient allowlist restricts sends when configured. The adapter calls `POST https://api.brevo.com/v3/smtp/email` with an `api-key` header and correlates the response's `messageId`. A registered/verified sender is required; the message ID is used to associate webhook status events. See [Send a transactional email](https://developers.brevo.com/docs/send-a-transactional-email). The webhook endpoint uses the documented bearer-token authentication mode; see [Secure webhook calls](https://developers.brevo.com/docs/secured-webhooks).
 
 ## Recipient rules
 
@@ -40,7 +43,7 @@ The adapter calls `POST https://api.brevo.com/v3/smtp/email` with an `api-key` h
 4. Donors are selected on the backend. Selection uses exact blood-group match and existing eligibility concepts: donor available, required health/age/donation-gap checks, affirmative emergency-notification consent, matching active/verified donor user linked through `donors.user_id`, and matching account/donor email. No email address or donor list supplied by the browser is trusted.
 5. The request and donor events are committed in the same SQLite transaction. No eligible linked/verified/opted-in donors means the request still succeeds and reports that no eligible donors were found. Regular/high requests do not fan out automatically.
 
-The automatic request-created notification path does not apply a distance/radius filter because `blood_requests` has no explicit notification-radius field or approved default. No radius is invented or inferred. Existing donor-search/manual alert filtering remains governed by its current server-side behavior.
+The automatic request-created notification path does not apply a distance/radius filter because `blood_requests` has no explicit notification-radius field or approved default. No radius is invented or inferred. Existing donor-search/manual alert filtering remains governed by its current server-side behavior. Before a production rollout that expects geographic targeting, choose and persist an explicit per-request or deployment-configured notification radius and add automatic fan-out distance tests.
 
 ### Donor accepts
 
@@ -48,7 +51,7 @@ The automatic request-created notification path does not apply a distance/radius
 
 ### Manual alert
 
-The existing `POST /api/v1/donors/send-email-alert` API remains available. It now records a compatible manual alert and a deterministic outbox event instead of directly sending synchronously. The legacy `emergency_alerts` table remains in place and its status is synchronized from outbox/provider status updates.
+The existing `POST /api/v1/donors/send-email-alert` API remains available. It records a compatible manual alert and a deterministic outbox event instead of directly sending synchronously. Hospital users are now authorized only for requests whose `hospital_user_id` matches their account; this check also applies to duplicate idempotency replays. The legacy `emergency_alerts` table remains in place and its status is synchronized from outbox/provider status updates.
 
 ## Database migration
 

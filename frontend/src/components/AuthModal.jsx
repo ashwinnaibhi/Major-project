@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { LogIn, UserPlus, X, Droplet, ShieldCheck, Heart, Sparkles } from 'lucide-react';
 import LocationFields from './LocationFields';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+import { getApiBaseUrl } from '../api/config';
+const API_BASE_URL = getApiBaseUrl();
 
 export default function AuthModal({ isOpen, onClose, onAuthSuccess }) {
   const [authMode, setAuthMode] = useState('register'); // 'login' or 'register'
@@ -80,15 +81,37 @@ export default function AuthModal({ isOpen, onClose, onAuthSuccess }) {
     setLoading(true);
     setMsg(null);
 
-    setTimeout(() => {
-      setLoading(false);
-      onAuthSuccess({
-        name: loginEmail.split('@')[0] || 'Registered Donor',
-        email: loginEmail,
-        role: 'DONOR'
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: loginEmail, password: loginPassword })
       });
-      onClose();
-    }, 600);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || data.message || 'Login failed. Please check your credentials.');
+      }
+
+      const role = data.user?.role === 'ROLE_ADMIN' ? 'ADMIN' :
+                   data.user?.role === 'ROLE_HOSPITAL' ? 'HOSPITAL' :
+                   data.user?.role === 'ROLE_STAFF' ? 'STAFF' : 'DONOR';
+
+      setMsg({ type: 'success', text: 'Login successful.' });
+      setTimeout(() => {
+        onAuthSuccess({
+          ...data.user,
+          role,
+          token: data.token || data.access_token,
+          isLoggedIn: true,
+          is_verified: Boolean(data.user?.is_verified)
+        });
+        onClose();
+      }, 500);
+    } catch (err) {
+      setMsg({ type: 'error', text: err.message || 'Login failed. Please verify email and password.' });
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (

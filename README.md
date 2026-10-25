@@ -1,144 +1,71 @@
-# HaemoPulse — Blood Donor Availability & Emergency Response Engine
+# HaemoPulse Blood Bank Management System
 
-HaemoPulse is an existing blood-bank management application with a React/Vite frontend, a FastAPI + SQLite backend, and a separate FastAPI/Scikit-learn prediction service. The project includes academic documentation, a training dataset, a saved Random Forest pipeline, and a model evaluation report.
+A full-stack healthcare platform facilitating hospital blood requisitions, donor matching, nearby hospital blood search, inventory management, and machine-learning-based regional blood availability simulation.
 
-## Actual project structure
+---
 
-```text
-Major-project/
-├── backend/
-│   ├── server.py                 # FastAPI API and SQLite access
-│   ├── create_role_user.py       # Interactive provisioning for ADMIN/HOSPITAL/STAFF
-│   ├── location_catalog.json     # Shared district/taluk options
-│   ├── requirements.txt
-│   └── .env.example
-├── frontend/                     # React 18 + Vite + Tailwind
-│   ├── package.json
-│   └── src/
-├── ml_service/
-│   ├── app.py                    # Prediction API
-│   ├── requirements.txt
-│   ├── dataset/                  # Existing training data and generator
-│   └── model/                    # Saved pipeline and evaluation results
-├── backend/tests/                # Isolated SQLite/API regression checks
-└── docs/                         # Existing project documents
-```
+## Architecture Overview
 
-The current operational backend is Python/FastAPI with SQLite; `backend/pom.xml` is a legacy Maven file and is not the startup path used by the application. The frontend uses Vite. The ML service loads the pre-existing serialized pipeline; it does not need to retrain the model during startup.
+- **Backend**: FastAPI (Python 3.11+), SQLite (`backend/bloodbank.db`), PBKDF2 authentication, PyJWT
+- **Frontend**: React 18, Vite, Tailwind CSS, Lucide icons, Axios
+- **ML Service**: FastAPI, scikit-learn Random Forest pipeline (`ml_service/model/donor_availability_rf.joblib`)
 
-## Requirements
+---
 
-- Python 3.10 or newer (Python 3.11 is a suitable baseline).
-- Node.js 18 or newer and npm.
-- A copy of the SQLite database if you need existing local records. This project archive intentionally excludes databases containing personal donor information.
+## Setup and Execution Instructions
 
-## 1. Prepare the backend
-
-From the project root, create and activate a virtual environment. Use the activation command for your shell:
-
+### 1. Backend Service
 ```bash
-python -m venv .venv-backend
-# macOS/Linux
-source .venv-backend/bin/activate
-# Windows PowerShell (use this instead of the line above):
-# .venv-backend\Scripts\Activate.ps1
-python -m pip install -r backend/requirements.txt
+cd backend
+# Install dependencies
+pip install fastapi uvicorn pydantic pyjwt python-dotenv
+
+# Run the backend server (runs on port 8000 / 8080)
+python -m uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Create the backend's local environment file:
-
-```bash
-# macOS/Linux
-cp backend/.env.example backend/.env
-# Windows PowerShell
-# Copy-Item backend/.env.example backend/.env
-```
-
-Edit `backend/.env` and set a strong, random, stable `JWT_SECRET` (at least 32 characters). Keep this file private. External email is disabled by default even when no `.env` file is present. Leave `HAEMOPULSE_DISABLE_EXTERNAL_MESSAGES=true` during development and testing. Only change it to `false` after intentionally configuring and testing the SMTP provider in a controlled environment.
-
-The backend defaults to `backend/bloodbank.db`. To use an existing local database at another path, set `BLOODBANK_DB_FILE` to that full path in `backend/.env`. **Back up the database before the first startup of an updated backend:** the API adds missing columns/tables in a backward-compatible initialization step. No database file or production records are bundled in the source ZIP.
-
-Start the API from the project root:
-
-```bash
-python backend/server.py
-```
-
-The default API URL is `http://localhost:8080`; API documentation is at `http://localhost:8080/docs`. The backend does not create default admin credentials. Create a management account interactively (password is hidden while entered):
-
-```bash
-python backend/create_role_user.py
-```
-
-Choose `ADMIN`, `HOSPITAL`, or `STAFF`. The script uses `backend/.env` and the same `BLOODBANK_DB_FILE` setting as the API. Public self-registration always creates a donor account; it cannot create a management role.
-
-## 2. Start the ML prediction service
-
-Use a separate virtual environment to match the pre-existing model artifact's Scikit-learn version:
-
-```bash
-python -m venv .venv-ml
-# macOS/Linux
-source .venv-ml/bin/activate
-# Windows PowerShell (instead of source):
-# .venv-ml\Scripts\Activate.ps1
-python -m pip install -r ml_service/requirements.txt
-python -m uvicorn app:app --app-dir ml_service --reload --port 8000
-```
-
-The service is available at `http://localhost:8000`; use `/health`, `/metrics`, and `/docs` to inspect it. Its model scenario endpoint is `POST /predict`. The checked-in model is a pre-existing pipeline trained using the dataset's `Zone A (Central)` to `Zone E (West)` categories—not Karnataka district/taluk labels. The UI therefore keeps model-zone input separate from actual district/taluk database counts. Scores are scenario predictions, not confirmations that a real donor is available or medically eligible. If the model artifact is missing or incompatible, inference is disabled rather than silently retraining or overwriting it.
-
-## 3. Start the frontend
-
-Open a third terminal:
-
+### 2. Frontend Application
 ```bash
 cd frontend
-npm ci
-npm run dev -- --host 127.0.0.1 --port 3000
+# Install dependencies
+npm install
+
+# Build for production or start development server
+npm run dev
+# or: npx vite
 ```
 
-The frontend uses these defaults unless overridden:
-
-- `VITE_API_BASE_URL=http://localhost:8080`
-- `VITE_ML_API_BASE_URL=http://localhost:8000`
-
-To change these values, create `frontend/.env.local` with the desired `VITE_...` settings and restart Vite. Never place secrets in Vite environment variables; all `VITE_` values are exposed to the browser.
-
-## Tests and build
-
-Install backend requirements and run the regression tests against a disposable SQLite database, not the application database:
-
+### 3. ML Prediction Service (Optional / Microservice)
 ```bash
-python -m pytest backend/tests/test_regressions.py -q
-python -m py_compile backend/server.py backend/create_role_user.py backend/tests/test_regressions.py ml_service/app.py
+cd ml_service
+pip install -r requirements.txt
+python -m uvicorn app:app --host 0.0.0.0 --port 8001 --reload
 ```
 
-Build the frontend using the existing lockfile:
+---
 
-```bash
-cd frontend
-npm ci
-npm run build
-```
+## Issues Addressed in this Release
 
-The regression suite covers password hashing and compatibility, donor self-registration and role assignment, authenticated own-profile access, shared location validation, availability-score and geographic-radius filters, inventory atomic/idempotent additions, appointment status persistence, and emergency-email eligibility, recipient routing, transaction atomicity, outbox idempotency/leases/retries, provider adapter handling, privacy, and authenticated/deduplicated webhook events. The email-provider path is mocked and external sends are disabled in tests. Browser-based visual/keyboard and full cross-service end-to-end checks still require a running browser environment.
+1. **Issue 1: Assigned Administrator Dropdown Removed**
+   - Removed the obsolete "Assigned Administrator" dropdown from the hospital requisition form in `HospitalDashboard.jsx`.
+   - Single admin auto-assignment is handled transparently on the backend.
 
-## Security, data, and operation notes
+2. **Issue 2: Verified Karnataka Government Hospitals Dataset**
+   - Integrated `karnataka_government_hospitals.json` containing verified government hospitals in Karnataka organized by district and taluk.
+   - Updated `/api/v1/hospitals/nearby-blood` to return actual facility records, filter proximity by taluk and district, and clearly indicate when blood inventory requires facility inquiry.
 
-- Treat `backend/bloodbank.db`, any backup databases, `.env` files, SMTP app passwords, and other credentials as private. They are ignored by Git and excluded from distributable source archives.
-- Back up the database before running an updated server. Startup may add missing fields and audit tables; it does not reset or deliberately reseed an existing database. Optional donor/inventory/request demo fixtures are disabled unless `HAEMOPULSE_ENABLE_DEMO_SEED=true` is explicitly set; this setting does not create login accounts or default passwords. Provision management accounts interactively with `backend/create_role_user.py`.
-- Emergency alerts require an authorized administrator/hospital account, a pending emergency request, matching blood group, stored eligibility fields, and explicit donor consent. The API saves an audit result and reports persistence separately from delivery. Test with external messaging disabled.
-- Inventory supports the component type already represented in the schema: `Whole Blood`. The schema aggregates stock by blood group and stores one expiry date per group, not per batch/lot.
-- Location-specific availability counts are database aggregates. The current ML feature schema does not contain district/taluk features, so district/taluk counts are not represented as ML predictions.
-- Keep external credentials out of source control. Never use invented donor coordinates, dummy credentials, or development sample data to claim operational results.
+3. **Issue 3: Donor Login and Registration Redirection**
+   - Fixed role normalization across `ROLE_DONOR`, `ROLE_HOSPITAL`, and `ROLE_ADMIN`.
+   - Updated `App.jsx`, `AuthModal.jsx`, and `server.py` so donors land directly on their donor dashboard with database-persisted profile data.
 
-## Existing documentation
+4. **Issue 4: Hospital ML Availability Simulator**
+   - Simplified features to `taluk`, `district`, `blood_group`, `units_requested`, and `urgency_level`.
+   - Retrained Random Forest pipeline (`donor_availability_rf.joblib`) eliminating donor demographic features (age, gender, response time) not pertinent to hospital taluk-level availability.
 
-See `docs/IEEE_Project_Report.md`, `docs/UML_Diagrams.md`, `docs/PPT_Presentation_Content.md`, `docs/Viva_Questions_And_Answers.md`, and `docs/DEPLOYMENT_GUIDE.md` for the project's existing academic and deployment materials. Review their architecture/metrics against the current implementation before relying on them; some were written for earlier project iterations.
+5. **Issue 5: Blood Inventory Management**
+   - Connected hospital stock management to the `hospital_blood_inventory` table (`/api/v1/hospitals/me/inventory`).
+   - Units update only upon database transaction confirmation. Positive quantities and schema-compliant expiry handling enforced.
 
-## Emergency email notifications
-
-The current email-notification implementation adds a durable SQLite outbox, explicit responsible hospital/admin assignments, a backend-only Brevo transactional adapter, provider-status webhooks, and mocked regression coverage. External sending is disabled by default and must remain disabled during local development and tests.
-
-See [`docs/EMAIL_NOTIFICATIONS.md`](docs/EMAIL_NOTIFICATIONS.md) for environment variables, recipient rules, migration/rollback guidance, API routes, retry semantics, and safe testing. Do not add live credentials to source control or enable external sending without separate explicit approval for a one-recipient test.
+6. **Issue 6: Emergency Donor Search & Alert**
+   - Fixed blood group compatibility filtering in `/api/donors/emergency-search`.
+   - Authenticated hospital identity is derived directly from the JWT session; arbitrary fallback to Koppa for unrelated hospitals has been eliminated.

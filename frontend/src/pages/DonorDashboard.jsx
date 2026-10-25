@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+import { getApiBaseUrl } from '../api/config';
+const API_BASE = getApiBaseUrl();
 import StatCard from '../components/StatCard';
 import MLPredictionBadge from '../components/MLPredictionBadge';
 import { getNextUpcomingAppointment } from '../utils/appointments';
@@ -8,7 +9,7 @@ import {
   Heart, CalendarCheck, Clock, Award, Bell, ShieldCheck,
   AlertCircle, PhoneCall, Building2, Send, CheckCircle, LogOut,
   UserPlus, LogIn, Mail, Phone, MapPin, Droplet, RefreshCw,
-  User, CheckCircle2, XCircle, Calendar, ShieldAlert
+  User, CheckCircle2, XCircle, Calendar, ShieldAlert, X, Printer, FileCheck
 } from 'lucide-react';
 
 export default function DonorDashboard({
@@ -21,7 +22,7 @@ export default function DonorDashboard({
   activeSubTab = 'donor_dashboard'
 }) {
   const isLoggedIn = currentUser && currentUser.isLoggedIn;
-  const isVerified = currentUser && currentUser.is_verified;
+  const isVerified = Boolean(currentUser?.is_verified || donorDetails?.is_verified);
 
   // Tabs for Auth: 'register' | 'login'
   const [authTab, setAuthTab] = useState('register');
@@ -89,6 +90,8 @@ export default function DonorDashboard({
   const [newAppCenter, setNewAppCenter] = useState('');
   const [appMsg, setAppMsg] = useState('');
   const [donationHistory, setDonationHistory] = useState([]);
+  const [selectedCertificate, setSelectedCertificate] = useState(null);
+  const [showCertModal, setShowCertModal] = useState(false);
 
   const [respondedAlerts, setRespondedAlerts] = useState({});
   const [availabilityPrediction, setAvailabilityPrediction] = useState({ status: 'idle', data: null, message: '' });
@@ -139,8 +142,20 @@ export default function DonorDashboard({
         if (cancelled) return;
         const details = { ...data.donor, ...(data.stats || {}), ...(data.user || {}), is_available: data.stats?.is_available ?? Boolean(data.donor.is_available) };
         setDonorDetails(details);
+        if (data.user?.is_verified && !currentUser?.is_verified && onUserUpdate) {
+          onUserUpdate({ ...currentUser, is_verified: true });
+        }
         setProfileForm(details);
         setDonationHistory(Array.isArray(data.donations) ? data.donations : []);
+        // Fetch verified donation records from dedicated history endpoint
+        fetch(`${API_BASE}/api/v1/donations/my-history`, { headers: { Authorization: `Bearer ${currentUser.token}` } })
+          .then(res => res.ok ? res.json() : null)
+          .then(hist => {
+            if (hist && Array.isArray(hist.records) && hist.records.length > 0) {
+              setDonationHistory(hist.records);
+            }
+          })
+          .catch(() => {});
         setAppointments((Array.isArray(data.appointments) ? data.appointments : []).slice().sort((a, b) => { const active = (v) => ['SCHEDULED', 'PENDING'].includes(String(v.status || '').toUpperCase()) ? 0 : 1; return active(a) - active(b) || String(a.appointment_date || a.date || '').localeCompare(String(b.appointment_date || b.date || '')); }));
         setAppointmentError('');
         setAvailabilityPrediction({ status: 'loading', data: null, message: '' });
@@ -251,7 +266,7 @@ export default function DonorDashboard({
   // Handle Resend Verification Email
   const handleResendEmail = async () => {
     if (resendCooldown > 0) return;
-    setResendStatus('Requesting verification email…');
+    setResendStatus('Requesting verification email...');
     setResendStatusError(false);
 
     try {
@@ -262,11 +277,21 @@ export default function DonorDashboard({
       });
       const data = await res.json();
       if (res.ok) {
-        setResendCooldown(60);
-        setResendStatus(data.message || (data.delivery?.delivery_status === 'DELIVERED' ? 'Verification email delivered.' : 'Verification email delivery was not confirmed.'));
-        setResendStatusError(!data.success);
+        if (data.success && data.delivery?.sent) {
+          setResendCooldown(60);
+          setResendStatus(data.message || `Verification email delivered to ${donorDetails.email}. Please check your inbox or spam folder.`);
+          setResendStatusError(false);
+        } else {
+          setResendCooldown(30);
+          const errMsg = data.delivery?.error || data.message || 'Verification email delivery failed. Please check backend SMTP configuration.';
+          setResendStatus(errMsg);
+          setResendStatusError(true);
+        }
+      } else if (res.status === 429) {
+        setResendStatus(data.detail || 'Rate limit: Please wait for the cooldown timer before requesting another email.');
+        setResendStatusError(true);
       } else {
-        setResendStatus(data.detail || 'Could not send verification email right now.');
+        setResendStatus(data.detail || data.message || 'Could not send verification email right now.');
         setResendStatusError(true);
       }
     } catch (e) {
@@ -805,12 +830,12 @@ export default function DonorDashboard({
           color="emerald"
         />
         <StatCard
-          title="Eligibility Status"
-          value={daysSinceLast == null ? 'Unknown' : isEligible ? 'Interval met' : 'Resting Period'}
+          title="Donation Interval Status"
+          value={daysSinceLast == null ? 'Interval Unrecorded' : isEligible ? 'Interval Satisfied' : 'Recovery Period'}
           subtitle={
             isEligible
-              ? `${requiredGap}-day gap passed (${donorDetails.gender || 'Male'})`
-              : daysRemaining == null ? 'Donation history not recorded' : `Next eligible in ${daysRemaining} days (${nextEligibleDate.toISOString().slice(0, 10)})`
+              ? `${requiredGap}-day gap met; subject to on-site clinical & Hb screening`
+              : daysRemaining == null ? 'Donation history not recorded' : `Interval active: ${daysRemaining} days remaining (${nextEligibleDate.toISOString().slice(0, 10)})`
           }
           icon={CalendarCheck}
           color={isEligible ? 'emerald' : 'amber'}
@@ -1073,20 +1098,30 @@ export default function DonorDashboard({
                   <th className="py-2.5 px-3">Blood Group</th>
                   <th className="py-2.5 px-3">Units</th>
                   <th className="py-2.5 px-3">Status</th>
+                  <th className="py-2.5 px-3 text-right">Certificate</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60">
                 {donationHistory.map((item, idx) => (
                   <tr key={idx} className="hover:bg-slate-900/40">
-                    <td className="py-2.5 px-3 font-mono text-slate-400">{item.donation_code || item.id}</td>
+                    <td className="py-2.5 px-3 font-mono text-slate-400">{item.certificate_code || item.donation_code || item.id}</td>
                     <td className="py-2.5 px-3 font-semibold text-white">{item.donation_date || item.date}</td>
-                    <td className="py-2.5 px-3 text-slate-300">{item.center_name || item.location}</td>
+                    <td className="py-2.5 px-3 text-slate-300">{item.hospital_name || item.center_name || item.location}</td>
                     <td className="py-2.5 px-3 font-black text-blood-400">{item.blood_group || item.blood}</td>
                     <td className="py-2.5 px-3 text-white">{item.units || 1} Unit</td>
                     <td className="py-2.5 px-3">
                       <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 font-semibold">
                         {item.status || 'Verified'}
                       </span>
+                    </td>
+                    <td className="py-2.5 px-3 text-right">
+                      <button
+                        onClick={() => { setSelectedCertificate(item); setShowCertModal(true); }}
+                        className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-blood-400 border border-slate-700 text-[11px] font-bold inline-flex items-center space-x-1 transition-all"
+                      >
+                        <Award className="w-3.5 h-3.5" />
+                        <span>View</span>
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -1264,6 +1299,90 @@ export default function DonorDashboard({
                 );
               })
             )}
+          </div>
+        </div>
+      )}
+
+      {/* CERTIFICATE VIEWER MODAL */}
+      {showCertModal && selectedCertificate && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div role="dialog" aria-modal="true" className="w-full max-w-lg p-6 rounded-2xl glass-panel border border-slate-700 bg-slate-950/95 space-y-6 shadow-2xl relative">
+            <button
+              onClick={() => { setShowCertModal(false); setSelectedCertificate(null); }}
+              className="absolute top-4 right-4 p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-all"
+              aria-label="Close certificate modal"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            {/* Certificate Header Banner */}
+            <div className="text-center space-y-2 border-b border-slate-800 pb-4">
+              <div className="inline-flex p-3 rounded-2xl bg-blood-950/80 border border-blood-800 text-blood-400 mx-auto">
+                <Award className="w-8 h-8" />
+              </div>
+              <h3 className="text-xl font-black text-white tracking-wide">Certificate of Blood Donation</h3>
+              <p className="text-xs text-slate-400 font-mono">
+                Official Certification #{selectedCertificate.certificate_code || selectedCertificate.donation_code || selectedCertificate.id}
+              </p>
+            </div>
+
+            {/* Certificate Body */}
+            <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80 space-y-3 text-xs">
+              <p className="text-slate-300 text-center leading-relaxed">
+                This certifies that <strong className="text-white text-sm">{selectedCertificate.donor_name || donorDetails.name || 'Honored Donor'}</strong> has generously contributed to saving human lives through voluntary blood donation.
+              </p>
+
+              <div className="grid grid-cols-2 gap-3 pt-2">
+                <div className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800">
+                  <span className="text-[10px] text-slate-500 uppercase block font-semibold">Blood Group</span>
+                  <span className="text-sm font-black text-blood-400">{selectedCertificate.blood_group}</span>
+                </div>
+                <div className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800">
+                  <span className="text-[10px] text-slate-500 uppercase block font-semibold">Units Donated</span>
+                  <span className="text-sm font-bold text-white">{selectedCertificate.units || 1} Unit(s)</span>
+                </div>
+                <div className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800">
+                  <span className="text-[10px] text-slate-500 uppercase block font-semibold">Date of Donation</span>
+                  <span className="text-xs font-semibold text-white">{selectedCertificate.donation_date}</span>
+                </div>
+                <div className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800">
+                  <span className="text-[10px] text-slate-500 uppercase block font-semibold">Donation Type</span>
+                  <span className="text-xs font-semibold text-white">{selectedCertificate.donation_type || 'Whole Blood'}</span>
+                </div>
+              </div>
+
+              <div className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800">
+                <span className="text-[10px] text-slate-500 uppercase block font-semibold">Medical Facility / Center</span>
+                <span className="text-xs font-bold text-slate-200">{selectedCertificate.hospital_name || selectedCertificate.center_name || 'Central Blood Bank Hub #1'}</span>
+              </div>
+
+              <div className="flex items-center justify-between pt-1">
+                <span className="inline-flex items-center space-x-1.5 text-emerald-400 font-bold text-[11px]">
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Status: {selectedCertificate.status || 'CONFIRMED'}</span>
+                </span>
+                <span className="text-[10px] font-mono text-slate-500">HaemoPulse Verified</span>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="flex items-center justify-end space-x-3 pt-2">
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold flex items-center space-x-1.5 border border-slate-700 transition-all"
+              >
+                <Printer className="w-4 h-4" />
+                <span>Print Certificate</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => { setShowCertModal(false); setSelectedCertificate(null); }}
+                className="px-4 py-2 rounded-xl bg-blood-600 hover:bg-blood-500 text-white text-xs font-bold transition-all"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

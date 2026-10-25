@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { CalendarCheck, Check, Clock, UserCheck, RefreshCw } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+import { getApiBaseUrl } from '../api/config';
+const API_BASE = getApiBaseUrl();
 
 export default function AppointmentsView({ currentUser, activeRole }) {
   const [appointments, setAppointments] = useState([]);

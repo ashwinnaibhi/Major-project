@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+import { getApiBaseUrl } from '../api/config';
+const API_BASE_URL = getApiBaseUrl();
 
 /**
  * Load the same district/taluk catalog used by backend validation.
