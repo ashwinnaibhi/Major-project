@@ -347,6 +347,11 @@ class HospitalProfilePayload(BaseModel):
     longitude: Optional[float] = None
     contact_email: Optional[str] = None
     contact_phone: Optional[str] = None
+    category: Optional[str] = None
+    has_blood_bank: Optional[bool] = None
+    verification_status: Optional[str] = None
+    blood_bank_status: Optional[str] = None
+    is_centroid_coordinates: Optional[bool] = None
 
 
 class ChangePasswordPayload(BaseModel):
@@ -1738,7 +1743,10 @@ def get_hospital_profile(user: dict = Depends(get_current_user),
     ).fetchone()
     if not hp:
         raise HTTPException(status_code=404, detail="Hospital profile not found.")
-    return {"hospital_profile": dict(hp)}
+    hp = dict(hp)
+    hp["has_blood_bank"] = bool(hp.get("has_blood_bank", 0))
+    hp["is_centroid_coordinates"] = bool(hp.get("is_centroid_coordinates", 0))
+    return {"hospital_profile": hp}
 
 
 @app.put("/api/v1/hospitals/me/profile")
@@ -1766,32 +1774,140 @@ def update_hospital_profile(payload: HospitalProfilePayload,
             )
 
     contact_phone = payload.contact_phone.strip() if payload.contact_phone else None
+    has_bb_int = (1 if payload.has_blood_bank else 0) if payload.has_blood_bank is not None else None
 
     if existing:
         final_contact_email = contact_email if contact_email is not None else existing["contact_email"]
         conn.execute(
             """UPDATE hospital_profiles
                SET hospital_name = ?, address = ?, district = ?, taluk = ?,
-                   latitude = ?, longitude = ?, contact_email = ?, contact_phone = COALESCE(?, contact_phone), updated_at = ?
+                   latitude = ?, longitude = ?, contact_email = ?, contact_phone = COALESCE(?, contact_phone),
+                   category = COALESCE(?, category), has_blood_bank = COALESCE(?, has_blood_bank), updated_at = ?
                WHERE hospital_user_id = ?""",
             (payload.hospital_name, payload.address, payload.district, payload.taluk,
-             payload.latitude, payload.longitude, final_contact_email, contact_phone, now, user["id"]),
+             payload.latitude, payload.longitude, final_contact_email, contact_phone,
+             payload.category, has_bb_int, now, user["id"]),
         )
     else:
         conn.execute(
             """INSERT INTO hospital_profiles
                  (hospital_user_id, hospital_name, address, district, taluk,
-                  latitude, longitude, contact_email, contact_phone, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  latitude, longitude, contact_email, contact_phone, category, has_blood_bank, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (user["id"], payload.hospital_name, payload.address, payload.district,
-             payload.taluk, payload.latitude, payload.longitude, contact_email, contact_phone, now, now),
+             payload.taluk, payload.latitude, payload.longitude, contact_email, contact_phone,
+             payload.category or "Taluk Hospital", 1 if payload.has_blood_bank is not False else 0, now, now),
         )
     conn.commit()
 
     hp = dict(conn.execute(
         "SELECT * FROM hospital_profiles WHERE hospital_user_id = ?", (user["id"],)
     ).fetchone())
+    hp["has_blood_bank"] = bool(hp.get("has_blood_bank", 0))
+    hp["is_centroid_coordinates"] = bool(hp.get("is_centroid_coordinates", 0))
     return {"hospital_profile": hp, "message": "Hospital profile saved."}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STATEWIDE HOSPITAL DIRECTORY  (/api/v1/hospitals)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/hospitals")
+def get_hospitals_directory(
+    district: Optional[str] = Query(None),
+    taluk: Optional[str] = Query(None),
+    has_blood_bank: Optional[bool] = Query(None),
+    verification_status: Optional[str] = Query(None),
+    blood_bank_status: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
+    limit: Optional[int] = Query(300),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """
+    Search and filter public hospitals and healthcare facilities across Karnataka.
+    Clearly distinguishes verified facilities from provisional records, and verified
+    blood banks from facilities with unknown or absent blood bank capability.
+    """
+    clauses = ["u.role = 'ROLE_HOSPITAL'"]
+    params: list = []
+
+    if district:
+        clauses.append("LOWER(hp.district) = LOWER(?)")
+        params.append(district.strip())
+    if taluk:
+        clauses.append("LOWER(hp.taluk) = LOWER(?)")
+        params.append(taluk.strip())
+    if has_blood_bank is not None:
+        clauses.append("COALESCE(hp.has_blood_bank, 0) = ?")
+        params.append(1 if has_blood_bank else 0)
+    if verification_status:
+        clauses.append("UPPER(COALESCE(hp.verification_status, 'PROVISIONAL')) = UPPER(?)")
+        params.append(verification_status.strip())
+    if blood_bank_status:
+        clauses.append("UPPER(COALESCE(hp.blood_bank_status, 'UNKNOWN')) = UPPER(?)")
+        params.append(blood_bank_status.strip())
+    if category:
+        clauses.append("LOWER(hp.category) = LOWER(?)")
+        params.append(category.strip())
+    if q:
+        query_pattern = f"%{q.strip().lower()}%"
+        clauses.append("(LOWER(hp.hospital_name) LIKE ? OR LOWER(hp.taluk) LIKE ? OR LOWER(hp.district) LIKE ? OR LOWER(u.email) LIKE ?)")
+        params.extend([query_pattern, query_pattern, query_pattern, query_pattern])
+
+    where_sql = " AND ".join(clauses)
+    sql = f"""
+        SELECT hp.hospital_user_id, hp.hospital_name, hp.address, hp.district, hp.taluk,
+               hp.latitude, hp.longitude, hp.contact_phone, hp.contact_email,
+               COALESCE(hp.category, 'Taluk Hospital') as category,
+               COALESCE(hp.has_blood_bank, 0) as has_blood_bank,
+               COALESCE(hp.verification_status, 'PROVISIONAL') as verification_status,
+               COALESCE(hp.blood_bank_status, 'UNKNOWN') as blood_bank_status,
+               COALESCE(hp.is_centroid_coordinates, 0) as is_centroid_coordinates,
+               u.email as login_username
+        FROM hospital_profiles hp
+        JOIN users u ON hp.hospital_user_id = u.id
+        WHERE {where_sql}
+        ORDER BY hp.district ASC, hp.taluk ASC, hp.hospital_name ASC
+        LIMIT ?
+    """
+    params.append(limit or 300)
+    rows = conn.execute(sql, tuple(params)).fetchall()
+
+    hospitals = []
+    verified_fac_count = 0
+    provisional_fac_count = 0
+    verified_bb_count = 0
+    unknown_bb_count = 0
+    no_bb_count = 0
+
+    for r in rows:
+        d = dict(r)
+        d["has_blood_bank"] = bool(d["has_blood_bank"])
+        d["is_centroid_coordinates"] = bool(d["is_centroid_coordinates"])
+        if d["verification_status"] == "VERIFIED":
+            verified_fac_count += 1
+        else:
+            provisional_fac_count += 1
+
+        if d["blood_bank_status"] == "VERIFIED":
+            verified_bb_count += 1
+        elif d["blood_bank_status"] == "UNKNOWN":
+            unknown_bb_count += 1
+        else:
+            no_bb_count += 1
+
+        hospitals.append(d)
+
+    return {
+        "total": len(hospitals),
+        "verified_facilities_count": verified_fac_count,
+        "provisional_facilities_count": provisional_fac_count,
+        "verified_blood_banks_count": verified_bb_count,
+        "unknown_blood_banks_count": unknown_bb_count,
+        "no_blood_banks_count": no_bb_count,
+        "hospitals": hospitals
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1899,6 +2015,8 @@ def nearby_blood(
              AND hbi.units_available > 0
              AND (hbi.expiry_date IS NULL OR hbi.expiry_date >= ?)
              AND hbi.hospital_user_id != ?
+             AND COALESCE(hp.verification_status, 'PROVISIONAL') = 'VERIFIED'
+             AND COALESCE(hp.has_blood_bank, 0) = 1
            ORDER BY hbi.units_available DESC""",
         (bg, today, user["id"])
     ).fetchall()
@@ -1936,6 +2054,10 @@ def nearby_blood(
 
             existing_names = {r["hospital_name"].lower() for r in results}
             for gh in gov_hospitals:
+                # Strictly include only independently verified facilities with confirmed blood banks
+                if gh.get("verification_status") != "VERIFIED" or not gh.get("has_blood_bank"):
+                    continue
+
                 # Exclude if same name as current hospital or already in results
                 gh_name = gh.get("name", "")
                 if (my_hosp and gh_name.lower() == my_hosp["hospital_name"].lower()) or gh_name.lower() in existing_names:

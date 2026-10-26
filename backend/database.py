@@ -222,6 +222,11 @@ CREATE TABLE IF NOT EXISTS hospital_profiles (
     longitude DOUBLE PRECISION,
     contact_email TEXT,
     contact_phone TEXT,
+    category TEXT DEFAULT 'General Hospital',
+    has_blood_bank INTEGER DEFAULT 0,
+    verification_status TEXT DEFAULT 'PROVISIONAL',
+    blood_bank_status TEXT DEFAULT 'UNKNOWN',
+    is_centroid_coordinates INTEGER DEFAULT 0,
     must_change_password INTEGER DEFAULT 0,
     initial_password_changed_at TEXT,
     created_at TEXT NOT NULL,
@@ -436,6 +441,11 @@ def init_postgres_schema(conn: PostgresConnectionWrapper) -> None:
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password INTEGER DEFAULT 0;",
         "ALTER TABLE hospital_profiles ADD COLUMN IF NOT EXISTS contact_email TEXT;",
         "ALTER TABLE hospital_profiles ADD COLUMN IF NOT EXISTS contact_phone TEXT;",
+        "ALTER TABLE hospital_profiles ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'General Hospital';",
+        "ALTER TABLE hospital_profiles ADD COLUMN IF NOT EXISTS has_blood_bank INTEGER DEFAULT 0;",
+        "ALTER TABLE hospital_profiles ADD COLUMN IF NOT EXISTS verification_status TEXT DEFAULT 'PROVISIONAL';",
+        "ALTER TABLE hospital_profiles ADD COLUMN IF NOT EXISTS blood_bank_status TEXT DEFAULT 'UNKNOWN';",
+        "ALTER TABLE hospital_profiles ADD COLUMN IF NOT EXISTS is_centroid_coordinates INTEGER DEFAULT 0;",
         "ALTER TABLE hospital_profiles ADD COLUMN IF NOT EXISTS must_change_password INTEGER DEFAULT 0;",
         "ALTER TABLE hospital_profiles ADD COLUMN IF NOT EXISTS initial_password_changed_at TEXT;"
     ]
@@ -495,6 +505,16 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
                 conn.execute("ALTER TABLE hospital_profiles ADD COLUMN contact_email TEXT")
             if "contact_phone" not in hp_cols:
                 conn.execute("ALTER TABLE hospital_profiles ADD COLUMN contact_phone TEXT")
+            if "category" not in hp_cols:
+                conn.execute("ALTER TABLE hospital_profiles ADD COLUMN category TEXT DEFAULT 'General Hospital'")
+            if "has_blood_bank" not in hp_cols:
+                conn.execute("ALTER TABLE hospital_profiles ADD COLUMN has_blood_bank INTEGER DEFAULT 0")
+            if "verification_status" not in hp_cols:
+                conn.execute("ALTER TABLE hospital_profiles ADD COLUMN verification_status TEXT DEFAULT 'PROVISIONAL'")
+            if "blood_bank_status" not in hp_cols:
+                conn.execute("ALTER TABLE hospital_profiles ADD COLUMN blood_bank_status TEXT DEFAULT 'UNKNOWN'")
+            if "is_centroid_coordinates" not in hp_cols:
+                conn.execute("ALTER TABLE hospital_profiles ADD COLUMN is_centroid_coordinates INTEGER DEFAULT 0")
             if "must_change_password" not in hp_cols:
                 conn.execute("ALTER TABLE hospital_profiles ADD COLUMN must_change_password INTEGER DEFAULT 0")
             if "initial_password_changed_at" not in hp_cols:

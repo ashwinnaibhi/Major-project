@@ -77,22 +77,66 @@ class HospitalAccountProvisioningTestCase(unittest.TestCase):
         self.assertIn("Invalid email or password", resp.json()["detail"])
 
     def test_government_hospitals_provisioned(self):
-        """Official government hospitals from JSON exist and can authenticate."""
-        # Sringeri CHC
+        """Official government hospitals from JSON exist and can authenticate with <taluk>_phc@haemopulse.in."""
+        # Sringeri PHC
         resp1 = client.post("/api/v1/auth/login", json={
-            "email": "sringeri_chc@haemopulse.in",
+            "email": "sringeri_phc@haemopulse.in",
             "password": "haemo@123"
         })
         self.assertEqual(resp1.status_code, 200, resp1.text)
         self.assertEqual(resp1.json()["role"], "ROLE_HOSPITAL")
 
-        # Chikmagalur DH
+        # Tarikere PHC
         resp2 = client.post("/api/v1/auth/login", json={
-            "email": "chikmagalur_dh@haemopulse.in",
+            "email": "tarikere_phc@haemopulse.in",
             "password": "haemo@123"
         })
         self.assertEqual(resp2.status_code, 200, resp2.text)
         self.assertEqual(resp2.json()["role"], "ROLE_HOSPITAL")
+
+        # Udupi PHC
+        resp3 = client.post("/api/v1/auth/login", json={
+            "email": "udupi_phc@haemopulse.in",
+            "password": "haemo@123"
+        })
+        self.assertEqual(resp3.status_code, 200, resp3.text)
+        self.assertEqual(resp3.json()["role"], "ROLE_HOSPITAL")
+
+        # Hassan PHC
+        resp4 = client.post("/api/v1/auth/login", json={
+            "email": "hassan_phc@haemopulse.in",
+            "password": "haemo@123"
+        })
+        self.assertEqual(resp4.status_code, 200, resp4.text)
+        self.assertEqual(resp4.json()["role"], "ROLE_HOSPITAL")
+
+        # Koppa PHC (distinct from preserved User ID 3 General Hospital Koppa)
+        resp5 = client.post("/api/v1/auth/login", json={
+            "email": "koppa_phc@haemopulse.in",
+            "password": "haemo@123"
+        })
+        self.assertEqual(resp5.status_code, 200, resp5.text)
+        self.assertEqual(resp5.json()["role"], "ROLE_HOSPITAL")
+
+    def test_statewide_hospital_directory(self):
+        """Statewide hospital directory endpoint returns all facilities with filtering."""
+        resp = client.get("/api/v1/hospitals")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertGreaterEqual(data["total"], 230)
+        self.assertTrue(any(h["taluk"] == "Sringeri" for h in data["hospitals"]))
+
+        # Filter by district
+        resp_udupi = client.get("/api/v1/hospitals?district=Udupi")
+        self.assertEqual(resp_udupi.status_code, 200)
+        for h in resp_udupi.json()["hospitals"]:
+            self.assertEqual(h["district"].lower(), "udupi")
+
+        # Filter by blood bank capability
+        resp_bb = client.get("/api/v1/hospitals?has_blood_bank=true")
+        self.assertEqual(resp_bb.status_code, 200)
+        for h in resp_bb.json()["hospitals"]:
+            self.assertTrue(h["has_blood_bank"])
 
     def test_provisioning_idempotency(self):
         """Running provisioning multiple times produces zero duplicate accounts or errors."""
@@ -105,7 +149,7 @@ class HospitalAccountProvisioningTestCase(unittest.TestCase):
         """Hospital can change password via /api/v1/auth/change-password."""
         # Log in first
         login_resp = client.post("/api/v1/auth/login", json={
-            "email": "sringeri_chc@haemopulse.in",
+            "email": "sringeri_phc@haemopulse.in",
             "password": "haemo@123"
         })
         self.assertEqual(login_resp.status_code, 200)
@@ -122,14 +166,14 @@ class HospitalAccountProvisioningTestCase(unittest.TestCase):
 
         # Login with old password fails
         fail_resp = client.post("/api/v1/auth/login", json={
-            "email": "sringeri_chc@haemopulse.in",
+            "email": "sringeri_phc@haemopulse.in",
             "password": "haemo@123"
         })
         self.assertEqual(fail_resp.status_code, 401)
 
         # Login with new password succeeds and must_change_password is False
         success_resp = client.post("/api/v1/auth/login", json={
-            "email": "sringeri_chc@haemopulse.in",
+            "email": "sringeri_phc@haemopulse.in",
             "password": new_pw
         })
         self.assertEqual(success_resp.status_code, 200)
@@ -278,6 +322,98 @@ class HospitalAccountProvisioningTestCase(unittest.TestCase):
         self.assertEqual(reqs_b.status_code, 200)
         req_ids_b = [r["id"] for r in reqs_b.json()]
         self.assertNotIn(req_id, req_ids_b)
+
+    def test_unverified_provisional_facilities_have_null_contact_and_centroid_flag(self):
+        """Unverified/provisional state facilities have null contact_phone, is_centroid_coordinates=True, and UNKNOWN blood bank status."""
+        resp = client.get("/api/v1/hospitals?verification_status=PROVISIONAL")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        provisional_list = data["hospitals"]
+        self.assertGreaterEqual(len(provisional_list), 220)
+
+        centroid_count = 0
+        for facility in provisional_list:
+            self.assertEqual(facility["verification_status"], "PROVISIONAL")
+            # All provisional government facilities use centroid coordinates and have no synthetic phone numbers
+            if facility.get("is_centroid_coordinates"):
+                centroid_count += 1
+                self.assertIsNone(facility["contact_phone"], f"Facility {facility['hospital_name']} had synthetic phone {facility['contact_phone']}")
+                self.assertEqual(facility["blood_bank_status"], "UNKNOWN")
+                self.assertFalse(facility["has_blood_bank"])
+
+        self.assertGreaterEqual(centroid_count, 220)
+
+    def test_verified_facilities_ground_truth_integrity(self):
+        """Verified facilities have VERIFIED status, exact coordinates (not centroid), and authentic records."""
+        resp = client.get("/api/v1/hospitals?verification_status=VERIFIED")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        verified_list = data["hospitals"]
+        self.assertGreaterEqual(len(verified_list), 10)
+
+        for facility in verified_list:
+            self.assertEqual(facility["verification_status"], "VERIFIED")
+            self.assertFalse(facility["is_centroid_coordinates"])
+
+        # Check blood bank status filter
+        resp_bb = client.get("/api/v1/hospitals?blood_bank_status=VERIFIED")
+        self.assertEqual(resp_bb.status_code, 200)
+        bb_list = resp_bb.json()["hospitals"]
+        self.assertGreaterEqual(len(bb_list), 9)
+        for bb in bb_list:
+            self.assertTrue(bb["has_blood_bank"])
+            self.assertEqual(bb["blood_bank_status"], "VERIFIED")
+
+    def test_nearby_blood_excludes_unverified_and_provisional_facilities(self):
+        """Nearby blood search strictly excludes provisional/unverified facilities."""
+        login_resp = client.post("/api/v1/auth/login", json={
+            "email": "koppa_ghpc@haemopulse.in",
+            "password": "haemo@123"
+        })
+        self.assertEqual(login_resp.status_code, 200)
+        token = login_resp.json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        resp = client.get("/api/v1/hospitals/nearby-blood?blood_group=A%2B&radius_km=500", headers=headers)
+        self.assertEqual(resp.status_code, 200)
+        results = resp.json()["results"]
+        self.assertGreater(len(results), 0)
+        for item in results:
+            self.assertTrue(item.get("has_blood_bank"), f"Non-blood-bank hospital {item} returned in nearby blood!")
+            # If from hospital_profiles DB join, verification_status must be VERIFIED
+            if "verification_status" in item:
+                self.assertEqual(item.get("verification_status"), "VERIFIED")
+
+    def test_statewide_dataset_no_duplicate_identities_or_facilities(self):
+        """Dataset and database have zero duplicate facility IDs or duplicate login usernames."""
+        conn = database.get_db_connection()
+        dups = conn.execute("""
+            SELECT LOWER(email), COUNT(*) as cnt
+            FROM users
+            WHERE role = 'ROLE_HOSPITAL'
+            GROUP BY LOWER(email)
+            HAVING COUNT(*) > 1
+        """).fetchall()
+        self.assertEqual(len(dups), 0, f"Found duplicate hospital login accounts: {[dict(d) for d in dups]}")
+
+    def test_preservation_of_existing_user_profiles_and_passwords(self):
+        """User ID 3 and User ID 16 preserve their accounts, credentials, and profile settings."""
+        conn = database.get_db_connection()
+        u3 = conn.execute("SELECT * FROM users WHERE id = 3").fetchone()
+        self.assertIsNotNone(u3)
+        self.assertEqual(u3["email"], "koppa_ghpc@haemopulse.in")
+        self.assertEqual(u3["role"], "ROLE_HOSPITAL")
+
+        hp3 = conn.execute("SELECT * FROM hospital_profiles WHERE hospital_user_id = 3").fetchone()
+        self.assertIsNotNone(hp3)
+        self.assertEqual(hp3["taluk"], "Koppa")
+        self.assertEqual(hp3["verification_status"], "VERIFIED")
+        self.assertEqual(hp3["contact_email"], "ashwinkumarns1995@gmail.com")
+
+        u16 = conn.execute("SELECT * FROM users WHERE id = 16").fetchone()
+        self.assertIsNotNone(u16)
+        self.assertEqual(u16["email"], "koppa_nrpura@haemopulse.in")
+        self.assertEqual(u16["role"], "ROLE_HOSPITAL")
 
 
 if __name__ == "__main__":

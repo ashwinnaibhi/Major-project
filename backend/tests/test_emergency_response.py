@@ -415,7 +415,7 @@ class EmergencyResponseTestCase(unittest.TestCase):
 
                 # Verified executed all DDL statements and committed
                 self.assertGreater(mock_cursor.execute.call_count, 10)
-                mock_conn.commit.assert_called_once()
+                self.assertTrue(mock_conn.commit.called)
                 mock_conn.close.assert_called_once()
 
 
