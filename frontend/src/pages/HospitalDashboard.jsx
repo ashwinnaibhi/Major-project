@@ -38,6 +38,47 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const [successNotice, setSuccessNotice] = useState('');
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [profileForm, setProfileForm] = useState({ contact_email: '', contact_phone: '' });
+  const [profileStatus, setProfileStatus] = useState(null);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+
+  const handleSaveProfile = async (e) => {
+    e.preventDefault();
+    setProfileStatus(null);
+    setIsSavingProfile(true);
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/hospitals/me/profile`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${currentUser?.token}`
+        },
+        body: JSON.stringify({
+          hospital_name: currentUser?.hospital_profile?.hospital_name || currentUser?.name || 'Hospital',
+          address: currentUser?.hospital_profile?.address || 'Hospital Address',
+          district: currentUser?.hospital_profile?.district || 'General',
+          taluk: currentUser?.hospital_profile?.taluk || null,
+          latitude: currentUser?.hospital_profile?.latitude,
+          longitude: currentUser?.hospital_profile?.longitude,
+          contact_email: profileForm.contact_email.trim() || null,
+          contact_phone: profileForm.contact_phone.trim() || null,
+        })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.detail || 'Could not save profile.');
+      if (currentUser?.hospital_profile) {
+        currentUser.hospital_profile.contact_email = data.hospital_profile.contact_email;
+        currentUser.hospital_profile.contact_phone = data.hospital_profile.contact_phone;
+      }
+      setProfileStatus({ type: 'success', text: 'Hospital contact details saved. Emergency notifications will route to this email.' });
+      setTimeout(() => setShowProfileModal(false), 1200);
+    } catch (err) {
+      setProfileStatus({ type: 'error', text: err.message });
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
 
   const updateField = (field, value) => {
     setNewRequest((previous) => ({ ...previous, [field]: value }));
@@ -272,35 +313,85 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
         </div>
       )}
 
+      {/* Dedicated Hospital Identity & Notification Routing Banner */}
+      <div className="p-4 rounded-2xl glass-panel border border-slate-800 bg-slate-950/70 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-xl">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-blood-800/80 border border-blood-700/60 text-white shadow-md">
+            <Building2 className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-extrabold text-white">
+                {currentUser?.hospital_profile?.hospital_name || currentUser?.name || 'Hospital Facility'}
+              </h3>
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700">
+                Taluk: {currentUser?.hospital_profile?.taluk || 'General'}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 mt-1">
+              <span>
+                Dedicated Login ID: <strong className="font-mono text-blood-300">{currentUser?.email || 'N/A'}</strong>
+              </span>
+              <span>•</span>
+              <span>
+                Verified Notification Email: <strong className={currentUser?.hospital_profile?.contact_email ? "text-emerald-400 font-mono" : "text-amber-400 font-mono"}>
+                  {currentUser?.hospital_profile?.contact_email || 'Not configured'}
+                </strong>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {(!currentUser?.hospital_profile?.contact_email || currentUser?.hospital_profile?.contact_email.endsWith('@haemopulse.in')) && (
+            <span className="text-[11px] text-amber-400 bg-amber-950/60 border border-amber-800/80 px-2.5 py-1 rounded-lg">
+              ⚠️ Email notifications require a verified contact email
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              setProfileForm({
+                contact_email: currentUser?.hospital_profile?.contact_email || '',
+                contact_phone: currentUser?.hospital_profile?.contact_phone || currentUser?.phone || '',
+              });
+              setShowProfileModal(true);
+            }}
+            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition shadow-sm"
+          >
+            Configure Notification Email
+          </button>
+        </div>
+      </div>
+
       {/* Hospital Metrics */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard 
-          title="Active Requisitions" 
-          value={`${requestsList.length} Total`} 
-          subtitle={`${pendingCount} Pending Verification`} 
-          icon={FileText} 
-          color="blood" 
+        <StatCard
+          title="Active Requisitions"
+          value={`${requestsList.length} Total`}
+          subtitle={`${pendingCount} Pending Verification`}
+          icon={FileText}
+          color="blood"
         />
-        <StatCard 
-          title="Fulfilled Requests" 
-          value={`${fulfilledCount} Allocated`} 
-          subtitle="Processed by staff" 
-          icon={CheckCircle2} 
-          color="emerald" 
+        <StatCard
+          title="Fulfilled Requests"
+          value={`${fulfilledCount} Allocated`}
+          subtitle="Processed by staff"
+          icon={CheckCircle2}
+          color="emerald"
         />
-        <StatCard 
-          title="Emergency Priority" 
-          value={`${emergencyCount} Calls`} 
-          subtitle="Critical priority" 
-          icon={AlertCircle} 
-          color="amber" 
+        <StatCard
+          title="Emergency Priority"
+          value={`${emergencyCount} Calls`}
+          subtitle="Critical priority"
+          icon={AlertCircle}
+          color="amber"
         />
-        <StatCard 
-          title="Nearby Matched Donors" 
-          value={`${donorsList.length} Registered`} 
-          subtitle="Ready for emergency dispatch" 
-          icon={MapPin} 
-          color="blue" 
+        <StatCard
+          title="Nearby Matched Donors"
+          value={`${donorsList.length} Registered`}
+          subtitle="Ready for emergency dispatch"
+          icon={MapPin}
+          color="blue"
         />
       </div>
 
@@ -642,8 +733,8 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
                 <div>
                   <label className="text-slate-300 block mb-1 font-semibold">Units Required (Min 1) *</label>
                   <input
-                    type="number" 
-                    min="1" 
+                    type="number"
+                    min="1"
                     max="50"
                     required
                     value={newRequest.units}
@@ -695,6 +786,93 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
                   className="px-5 py-2 rounded-xl bg-gradient-to-r from-blood-600 to-blood-700 hover:from-blood-500 hover:to-blood-600 text-white font-extrabold shadow-md glow-red disabled:opacity-50"
                 >
                   {isSubmitting ? 'Saving request…' : 'Submit & Sync with Staff'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal - Hospital Profile & Contact Email Configuration */}
+      {showProfileModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-950 border border-slate-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl relative">
+            <button
+              onClick={() => setShowProfileModal(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center space-x-2 text-blood-400 mb-2">
+              <Building2 className="w-5 h-5" />
+              <h3 className="text-xl font-black text-white">Hospital Notification Settings</h3>
+            </div>
+            <p className="text-xs text-slate-400 mb-4">
+              Configure the real contact email address that receives transactional Brevo alerts when donors accept emergency blood requests.
+            </p>
+
+            {profileStatus && (
+              <div role="status" className={`rounded-xl border p-3 text-xs mb-4 ${
+                profileStatus.type === 'error'
+                  ? 'border-rose-800 bg-rose-950/50 text-rose-200'
+                  : 'border-emerald-800 bg-emerald-950/50 text-emerald-200'
+              }`}>
+                {profileStatus.text}
+              </div>
+            )}
+
+            <form onSubmit={handleSaveProfile} className="space-y-4 text-xs">
+              <div>
+                <label className="text-slate-400 block mb-1">Facility Login Identity (Immutable)</label>
+                <input
+                  type="text"
+                  disabled
+                  value={currentUser?.email || ''}
+                  className="w-full bg-slate-900/60 border border-slate-800 rounded-xl px-3 py-2 text-slate-400 font-mono"
+                />
+                <span className="text-[10px] text-slate-500 mt-1 block">Dedicated system username format: taluk_hospital@haemopulse.in</span>
+              </div>
+
+              <div>
+                <label className="text-slate-300 block mb-1 font-semibold">Official Notification Email (Real Inbox) *</label>
+                <input
+                  type="email"
+                  required
+                  value={profileForm.contact_email}
+                  onChange={(e) => setProfileForm({ ...profileForm, contact_email: e.target.value })}
+                  placeholder="e.g. staff_contact@hospital.org"
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blood-500"
+                />
+                <span className="text-[10px] text-slate-400 mt-1 block">Brevo transactional alerts will only be delivered to this verified inbox, never to dummy @haemopulse.in identities.</span>
+              </div>
+
+              <div>
+                <label className="text-slate-300 block mb-1 font-semibold">Hospital Emergency Contact Phone</label>
+                <input
+                  type="tel"
+                  value={profileForm.contact_phone}
+                  onChange={(e) => setProfileForm({ ...profileForm, contact_phone: e.target.value })}
+                  placeholder="e.g. 08265-221234"
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blood-500"
+                />
+              </div>
+
+              <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setShowProfileModal(false)}
+                  disabled={isSavingProfile}
+                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 font-semibold disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingProfile}
+                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-blood-600 to-blood-700 hover:from-blood-500 hover:to-blood-600 text-white font-extrabold shadow-md glow-red disabled:opacity-50"
+                >
+                  {isSavingProfile ? 'Saving…' : 'Save Notification Settings'}
                 </button>
               </div>
             </form>

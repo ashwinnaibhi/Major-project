@@ -32,6 +32,7 @@ else:
     load_dotenv()
 
 from database import get_db, is_postgres, init_postgres_schema, get_db_connection
+from provision_hospitals import generate_hospital_username, DEFAULT_INITIAL_PASSWORD
 from email_service import (
     send_verification_email,
     send_verification_smtp_email,
@@ -341,6 +342,17 @@ class HospitalProfilePayload(BaseModel):
     taluk: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+
+
+class ChangePasswordPayload(BaseModel):
+    current_password: Optional[str] = None
+    new_password: str
+
+
+class ResetHospitalPasswordPayload(BaseModel):
+    new_password: Optional[str] = None
 
 
 class HospitalRegisterPayload(BaseModel):
@@ -424,11 +436,15 @@ def _build_auth_response(user: dict, conn: sqlite3.Connection) -> dict:
             donor_id = donor_profile.get("donor_id")
             blood_group = donor_profile.get("blood_group")
 
+    user_dict = dict(user)
+    must_change = bool(user_dict.get("must_change_password") or (hospital_profile and hospital_profile.get("must_change_password")))
+
     return {
         "access_token": token,
         "token": token,
         "token_type": "bearer",
         "role": role,
+        "must_change_password": must_change,
         "donor": donor_profile,
         "user": {
             "id": user["id"],
@@ -437,6 +453,7 @@ def _build_auth_response(user: dict, conn: sqlite3.Connection) -> dict:
             "phone": user.get("phone", ""),
             "role": role,
             "is_verified": bool(user.get("is_verified")),
+            "must_change_password": must_change,
             "hospital_profile": hospital_profile,
             "donor_id": donor_id,
             "blood_group": blood_group,
@@ -451,9 +468,19 @@ def _build_auth_response(user: dict, conn: sqlite3.Connection) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _do_login(email: str, password: str, conn: sqlite3.Connection) -> dict:
+    clean_email = (email or "").strip().lower()
     user = conn.execute(
-        "SELECT * FROM users WHERE LOWER(email) = LOWER(?)", (email,)
+        "SELECT * FROM users WHERE LOWER(email) = LOWER(?)", (clean_email,)
     ).fetchone()
+    if not user:
+        # Check if clean_email matches contact_email in hospital_profiles
+        hp = conn.execute(
+            "SELECT hospital_user_id FROM hospital_profiles WHERE LOWER(contact_email) = LOWER(?)",
+            (clean_email,)
+        ).fetchone()
+        if hp:
+            user = conn.execute("SELECT * FROM users WHERE id = ?", (hp["hospital_user_id"],)).fetchone()
+
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
@@ -497,8 +524,89 @@ def login_donor_dashboard(req: LoginRequest, conn: sqlite3.Connection = Depends(
         "access_token": resp["access_token"],
         "token_type": "bearer",
         "role": resp["role"],
+        "must_change_password": resp["must_change_password"],
         "user": resp["user"],
         "donor": resp.get("donor"),
+    }
+
+
+@app.post("/api/v1/auth/change-password")
+def change_password(payload: ChangePasswordPayload,
+                    user: dict = Depends(get_current_user),
+                    conn: sqlite3.Connection = Depends(get_db)):
+    new_pw = payload.new_password.strip()
+    if len(new_pw) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters long.")
+
+    user_row = conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+    if not user_row:
+        raise HTTPException(status_code=404, detail="User account not found.")
+
+    must_change = bool(dict(user_row).get("must_change_password"))
+    if not must_change and payload.current_password:
+        valid, _ = verify_password(payload.current_password, user_row["password"])
+        if not valid:
+            raise HTTPException(status_code=400, detail="Current password does not match.")
+    elif not must_change and not payload.current_password:
+        raise HTTPException(status_code=400, detail="Current password is required to set a new password.")
+
+    new_hash = hash_password(new_pw)
+    now_iso = datetime.datetime.utcnow().isoformat(sep=" ", timespec="seconds")
+    conn.execute(
+        "UPDATE users SET password = ?, must_change_password = 0 WHERE id = ?",
+        (new_hash, user["id"])
+    )
+    if user["role"] == "ROLE_HOSPITAL":
+        conn.execute(
+            """UPDATE hospital_profiles
+               SET must_change_password = 0, initial_password_changed_at = ?, updated_at = ?
+               WHERE hospital_user_id = ?""",
+            (now_iso, now_iso, user["id"])
+        )
+    conn.commit()
+
+    return {"success": True, "message": "Password updated successfully."}
+
+
+@app.post("/api/v1/admin/hospitals/{hospital_user_id}/reset-password")
+def admin_reset_hospital_password(hospital_user_id: int,
+                                  payload: Optional[ResetHospitalPasswordPayload] = None,
+                                  user: dict = Depends(get_current_user),
+                                  conn: sqlite3.Connection = Depends(get_db)):
+    if user["role"] != "ROLE_ADMIN":
+        raise HTTPException(status_code=403, detail="Administrator access required")
+
+    hosp_user = conn.execute(
+        "SELECT id, email, role FROM users WHERE id = ?", (hospital_user_id,)
+    ).fetchone()
+    if not hosp_user or hosp_user["role"] != "ROLE_HOSPITAL":
+        raise HTTPException(status_code=404, detail="Hospital account not found.")
+
+    temp_pw = (payload.new_password if payload and payload.new_password else "").strip() or DEFAULT_INITIAL_PASSWORD
+    if len(temp_pw) < 8:
+        raise HTTPException(status_code=400, detail="Temporary password must contain at least 8 characters.")
+
+    new_hash = hash_password(temp_pw)
+    now_iso = datetime.datetime.utcnow().isoformat(sep=" ", timespec="seconds")
+    conn.execute(
+        "UPDATE users SET password = ?, must_change_password = 1 WHERE id = ?",
+        (new_hash, hospital_user_id)
+    )
+    conn.execute(
+        """UPDATE hospital_profiles
+           SET must_change_password = 1, updated_at = ?
+           WHERE hospital_user_id = ?""",
+        (now_iso, hospital_user_id)
+    )
+    conn.commit()
+
+    return {
+        "success": True,
+        "hospital_user_id": hospital_user_id,
+        "username": hosp_user["email"],
+        "temporary_password": temp_pw,
+        "must_change_password": True,
+        "message": f"Password for hospital account {hosp_user['email']} has been reset."
     }
 
 
@@ -641,6 +749,11 @@ def register_hospital(req: HospitalRegisterPayload, conn: Any = Depends(get_db))
     clean_email = req.email.strip().lower()
     if not clean_email or "@" not in clean_email:
         raise HTTPException(status_code=400, detail="A valid email address is required.")
+    if clean_email.endswith("@haemopulse.in"):
+        raise HTTPException(
+            status_code=400,
+            detail="Please provide a real external contact email for hospital notifications (cannot be @haemopulse.in)."
+        )
     if len(req.password) < 8:
         raise HTTPException(status_code=400, detail="Password must contain at least 8 characters.")
     hospital_name = req.hospital_name.strip()
@@ -653,28 +766,32 @@ def register_hospital(req: HospitalRegisterPayload, conn: Any = Depends(get_db))
     if not district:
         raise HTTPException(status_code=400, detail="Hospital district is required.")
 
-    existing = conn.execute(
-        "SELECT id FROM users WHERE LOWER(email) = LOWER(?)", (clean_email,)
+    # Check if contact email already exists
+    existing_contact = conn.execute(
+        "SELECT hospital_user_id FROM hospital_profiles WHERE LOWER(contact_email) = LOWER(?)",
+        (clean_email,)
     ).fetchone()
-    if existing:
-        raise HTTPException(status_code=400, detail="An account with this email already exists.")
+    if existing_contact:
+        raise HTTPException(status_code=400, detail="A hospital account with this contact email already exists.")
+
+    assigned_username = generate_hospital_username(req.taluk or district, hospital_name, conn=conn)
 
     pw_hash = hash_password(req.password)
     now_iso = datetime.datetime.utcnow().isoformat(sep=" ", timespec="seconds")
 
     cur = conn.cursor()
     cur.execute(
-        """INSERT INTO users (name, email, password, phone, role, is_verified, status)
-           VALUES (?, ?, ?, ?, 'ROLE_HOSPITAL', 1, 'ACTIVE')""",
-        (hospital_name, clean_email, pw_hash, req.phone.strip()),
+        """INSERT INTO users (name, email, password, phone, role, is_verified, status, must_change_password)
+           VALUES (?, ?, ?, ?, 'ROLE_HOSPITAL', 1, 'ACTIVE', 0)""",
+        (hospital_name, assigned_username, pw_hash, req.phone.strip()),
     )
     user_id = cur.lastrowid
 
     cur.execute(
         """INSERT INTO hospital_profiles
-             (hospital_user_id, hospital_name, address, district, taluk, latitude, longitude, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (user_id, hospital_name, address, district, req.taluk or None, req.latitude, req.longitude, now_iso, now_iso),
+             (hospital_user_id, hospital_name, address, district, taluk, latitude, longitude, contact_email, contact_phone, must_change_password, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)""",
+        (user_id, hospital_name, address, district, req.taluk or None, req.latitude, req.longitude, clean_email, req.phone.strip(), now_iso, now_iso),
     )
     conn.commit()
 
@@ -682,7 +799,8 @@ def register_hospital(req: HospitalRegisterPayload, conn: Any = Depends(get_db))
     auth_resp = _build_auth_response(dict(user_row), conn)
     return {
         "success": True,
-        "message": f"Hospital '{hospital_name}' registered successfully.",
+        "message": f"Hospital '{hospital_name}' registered successfully. Dedicated login identity: {assigned_username}",
+        "assigned_username": assigned_username,
         "token": auth_resp["token"],
         "access_token": auth_resp["access_token"],
         "token_type": "bearer",
@@ -1482,10 +1600,61 @@ def respond_to_request(request_id: int, payload: RequestResponsePayload,
             detail=f"Database failed to record emergency response: {str(exc)}"
         )
 
+    notification_result = None
+    if action == "ACCEPTED":
+        req_row = conn.execute("SELECT * FROM blood_requests WHERE id = ?", (request_id,)).fetchone()
+        if req_row:
+            hosp_user_id = req_row["hospital_user_id"] or req_row["created_by_user_id"]
+            contact_email = None
+            if hosp_user_id:
+                hp = conn.execute("SELECT contact_email FROM hospital_profiles WHERE hospital_user_id = ?", (hosp_user_id,)).fetchone()
+                if hp and hp["contact_email"]:
+                    contact_email = hp["contact_email"].strip().lower()
+
+            override_email = os.getenv("HAEMOPULSE_HOSPITAL_NOTIFICATION_OVERRIDE_EMAIL", "").strip().lower()
+            target_recipient = override_email or contact_email
+
+            if not target_recipient or target_recipient.endswith("@haemopulse.in"):
+                notification_result = {
+                    "delivered": False,
+                    "recipient": target_recipient or "unconfigured",
+                    "reason": "DUMMY_LOGIN_IDENTITY",
+                    "message": "Hospital login identity cannot receive email. Please configure a valid contact email in Hospital Profile."
+                }
+            else:
+                try:
+                    subject, text_body, html_body = render_acceptance_email(
+                        dict(req_row),
+                        {"name": donor["name"], "accepted_at": now_iso},
+                        "HOSPITAL"
+                    )
+                    sub = send_transactional_email(
+                        recipient_email=target_recipient,
+                        recipient_name=req_row["hospital_name"] or "Hospital Staff",
+                        subject=subject,
+                        text_content=text_body,
+                        html_content=html_body,
+                    )
+                    notification_result = {
+                        "delivered": sub.status in ("SUBMITTED", "DELIVERED"),
+                        "status": sub.status,
+                        "recipient": target_recipient,
+                        "message_id": sub.message_id,
+                        "error": sub.error_code,
+                    }
+                except Exception as ex:
+                    notification_result = {
+                        "delivered": False,
+                        "recipient": target_recipient,
+                        "status": "ERROR",
+                        "error": str(ex),
+                    }
+
     return {
         "success": True,
         "response": action,
         "message": f"Your {action.lower()} response was recorded.",
+        "notification": notification_result,
     }
 
 
@@ -1546,6 +1715,19 @@ def get_admin_emergency_responses(user: dict = Depends(get_current_user),
 # HOSPITAL PROFILE  (/api/v1/hospitals/me/profile)
 # ─────────────────────────────────────────────────────────────────────────────
 
+@app.get("/api/v1/hospitals/me/profile")
+def get_hospital_profile(user: dict = Depends(get_current_user),
+                         conn: sqlite3.Connection = Depends(get_db)):
+    if user["role"] != "ROLE_HOSPITAL":
+        raise HTTPException(status_code=403, detail="Hospital access only")
+    hp = conn.execute(
+        "SELECT * FROM hospital_profiles WHERE hospital_user_id = ?", (user["id"],)
+    ).fetchone()
+    if not hp:
+        raise HTTPException(status_code=404, detail="Hospital profile not found.")
+    return {"hospital_profile": dict(hp)}
+
+
 @app.put("/api/v1/hospitals/me/profile")
 def update_hospital_profile(payload: HospitalProfilePayload,
                              user: dict = Depends(get_current_user),
@@ -1555,27 +1737,41 @@ def update_hospital_profile(payload: HospitalProfilePayload,
 
     now = datetime.datetime.utcnow().isoformat(sep=" ", timespec="seconds")
     existing = conn.execute(
-        "SELECT hospital_user_id FROM hospital_profiles WHERE hospital_user_id = ?",
+        "SELECT hospital_user_id, contact_email FROM hospital_profiles WHERE hospital_user_id = ?",
         (user["id"],)
     ).fetchone()
 
+    contact_email = payload.contact_email
+    if contact_email is not None:
+        contact_email = contact_email.strip().lower()
+        if contact_email == "":
+            contact_email = None
+        elif "@" not in contact_email or contact_email.endswith("@haemopulse.in"):
+            raise HTTPException(
+                status_code=400,
+                detail="A valid real email address is required for hospital notifications (cannot be @haemopulse.in)."
+            )
+
+    contact_phone = payload.contact_phone.strip() if payload.contact_phone else None
+
     if existing:
+        final_contact_email = contact_email if contact_email is not None else existing["contact_email"]
         conn.execute(
             """UPDATE hospital_profiles
                SET hospital_name = ?, address = ?, district = ?, taluk = ?,
-                   latitude = ?, longitude = ?, updated_at = ?
+                   latitude = ?, longitude = ?, contact_email = ?, contact_phone = COALESCE(?, contact_phone), updated_at = ?
                WHERE hospital_user_id = ?""",
             (payload.hospital_name, payload.address, payload.district, payload.taluk,
-             payload.latitude, payload.longitude, now, user["id"]),
+             payload.latitude, payload.longitude, final_contact_email, contact_phone, now, user["id"]),
         )
     else:
         conn.execute(
             """INSERT INTO hospital_profiles
                  (hospital_user_id, hospital_name, address, district, taluk,
-                  latitude, longitude, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  latitude, longitude, contact_email, contact_phone, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (user["id"], payload.hospital_name, payload.address, payload.district,
-             payload.taluk, payload.latitude, payload.longitude, now, now),
+             payload.taluk, payload.latitude, payload.longitude, contact_email, contact_phone, now, now),
         )
     conn.commit()
 

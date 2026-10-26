@@ -99,7 +99,7 @@ class SystemRepairTestCase(unittest.TestCase):
         self.assertEqual(data["hospital_profile"]["hospital_name"], "Koppa Community Hospital")
 
         # Verify DB records
-        user_row = self.conn.execute("SELECT * FROM users WHERE email = ?", ("koppa_community@haemopulse.invalid",)).fetchone()
+        user_row = self.conn.execute("SELECT * FROM users WHERE email = ? OR id IN (SELECT hospital_user_id FROM hospital_profiles WHERE contact_email = ?)", ("koppa_community@haemopulse.invalid", "koppa_community@haemopulse.invalid")).fetchone()
         self.assertIsNotNone(user_row)
         self.assertEqual(user_row["role"], "ROLE_HOSPITAL")
 

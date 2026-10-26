@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS users (
     is_verified INTEGER DEFAULT 0,
     verification_token TEXT,
     verification_token_expiry TEXT,
-    last_verification_email_sent_at TEXT
+    last_verification_email_sent_at TEXT,
+    must_change_password INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS donors (
@@ -219,6 +220,10 @@ CREATE TABLE IF NOT EXISTS hospital_profiles (
     taluk TEXT,
     latitude DOUBLE PRECISION,
     longitude DOUBLE PRECISION,
+    contact_email TEXT,
+    contact_phone TEXT,
+    must_change_password INTEGER DEFAULT 0,
+    initial_password_changed_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -427,7 +432,12 @@ def init_postgres_schema(conn: PostgresConnectionWrapper) -> None:
     migration_stmts = [
         "ALTER TABLE blood_requests ADD COLUMN IF NOT EXISTS units_fulfilled INTEGER DEFAULT 0;",
         "ALTER TABLE blood_requests ADD COLUMN IF NOT EXISTS fulfilled_at TEXT;",
-        "ALTER TABLE donation_history ADD COLUMN IF NOT EXISTS requisition_id INTEGER REFERENCES blood_requests(id) ON DELETE SET NULL;"
+        "ALTER TABLE donation_history ADD COLUMN IF NOT EXISTS requisition_id INTEGER REFERENCES blood_requests(id) ON DELETE SET NULL;",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password INTEGER DEFAULT 0;",
+        "ALTER TABLE hospital_profiles ADD COLUMN IF NOT EXISTS contact_email TEXT;",
+        "ALTER TABLE hospital_profiles ADD COLUMN IF NOT EXISTS contact_phone TEXT;",
+        "ALTER TABLE hospital_profiles ADD COLUMN IF NOT EXISTS must_change_password INTEGER DEFAULT 0;",
+        "ALTER TABLE hospital_profiles ADD COLUMN IF NOT EXISTS initial_password_changed_at TEXT;"
     ]
     for m_stmt in migration_stmts:
         try:
@@ -470,6 +480,25 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(donation_history)").fetchall()]
         if cols and "requisition_id" not in cols:
             conn.execute("ALTER TABLE donation_history ADD COLUMN requisition_id INTEGER REFERENCES blood_requests(id)")
+    except Exception:
+        pass
+    try:
+        u_cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+        if u_cols and "must_change_password" not in u_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0")
+    except Exception:
+        pass
+    try:
+        hp_cols = [r[1] for r in conn.execute("PRAGMA table_info(hospital_profiles)").fetchall()]
+        if hp_cols:
+            if "contact_email" not in hp_cols:
+                conn.execute("ALTER TABLE hospital_profiles ADD COLUMN contact_email TEXT")
+            if "contact_phone" not in hp_cols:
+                conn.execute("ALTER TABLE hospital_profiles ADD COLUMN contact_phone TEXT")
+            if "must_change_password" not in hp_cols:
+                conn.execute("ALTER TABLE hospital_profiles ADD COLUMN must_change_password INTEGER DEFAULT 0")
+            if "initial_password_changed_at" not in hp_cols:
+                conn.execute("ALTER TABLE hospital_profiles ADD COLUMN initial_password_changed_at TEXT")
     except Exception:
         pass
     conn.commit()
