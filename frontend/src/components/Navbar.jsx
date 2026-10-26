@@ -6,10 +6,10 @@ export default function Navbar({ activeRole = 'DONOR', handleRoleChange, current
   const isAuthenticated = Boolean(currentUser?.token && currentUser?.isLoggedIn);
   const authenticatedRole = currentUser?.role;
   const isViewingOwnRole = isAuthenticated && authenticatedRole === safeRole;
-  const name = isViewingOwnRole ? (currentUser.name || currentUser.email || 'Signed-in user') : 'Sign-in required';
+  const name = isViewingOwnRole ? (currentUser.name || currentUser.email || 'Signed-in user') : (isAuthenticated ? `${currentUser.name || currentUser.email} (${authenticatedRole})` : 'Sign-in required');
   const title = isViewingOwnRole
     ? `${authenticatedRole} account`
-    : `Viewing ${String(safeRole).toLowerCase()} interface`;
+    : (safeRole === 'ROLE_SELECTION' ? 'Choose account role' : `Viewing ${String(safeRole).toLowerCase()} interface`);
 
   return (
     <header className="sticky top-0 z-40 glass-panel border-b border-slate-800 px-4 md:px-6 py-3">
@@ -37,6 +37,16 @@ export default function Navbar({ activeRole = 'DONOR', handleRoleChange, current
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-1 bg-slate-900/90 p-1 rounded-xl border border-slate-800">
             <span className="text-xs text-slate-400 px-2 font-medium">View:</span>
+            {!isAuthenticated && (
+              <button
+                type="button"
+                onClick={() => handleRoleChange('ROLE_SELECTION')}
+                aria-pressed={activeRole === 'ROLE_SELECTION'}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all ${activeRole === 'ROLE_SELECTION' ? 'bg-blood-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}
+              >
+                Roles Portal
+              </button>
+            )}
             {[
               { id: 'ADMIN', label: 'Admin' },
               { id: 'HOSPITAL', label: 'Hospital' },
@@ -69,6 +79,9 @@ export default function Navbar({ activeRole = 'DONOR', handleRoleChange, current
             )}
             {!isAuthenticated && activeRole === 'HOSPITAL' && (
               <span className="rounded-xl border border-sky-900 bg-sky-950/50 px-2.5 py-1.5 text-xs font-semibold text-sky-200">Hospital sign-in required</span>
+            )}
+            {!isAuthenticated && activeRole === 'ADMIN' && (
+              <span className="rounded-xl border border-amber-900 bg-amber-950/50 px-2.5 py-1.5 text-xs font-semibold text-amber-200">Admin auth required</span>
             )}
             {isAuthenticated && (
               <button type="button" onClick={onLogout} title="Log out" className="px-2.5 py-1.5 rounded-xl bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800 text-xs font-bold flex items-center gap-1">

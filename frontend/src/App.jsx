@@ -11,6 +11,9 @@ import InventoryView from './pages/InventoryView';
 import RequestsView from './pages/RequestsView';
 import AppointmentsView from './pages/AppointmentsView';
 import VerifyEmailPage from './pages/VerifyEmailPage';
+import HospitalAuth from './pages/HospitalAuth';
+import RoleSelection from './components/RoleSelection';
+import { ShieldAlert } from 'lucide-react';
 
 import { getApiBaseUrl } from './api/config';
 const API_BASE = getApiBaseUrl();
@@ -38,6 +41,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState(readPersistedUser);
   const [activeTab, setActiveTab] = useState(() => readPersistedUser()?.role === 'DONOR' ? 'donor_dashboard' : 'dashboard');
   const [activeRole, setActiveRole] = useState(() => roleFromSession(readPersistedUser()));
+  const [roleSwitchPrompt, setRoleSwitchPrompt] = useState(null);
 
   // Check if current route is /verify-email
   const isVerifyEmailRoute = window.location.pathname.startsWith('/verify-email');
@@ -112,6 +116,21 @@ export default function App() {
 
   // The role selector changes the view only; it never manufactures a logged-in identity.
   const handleRoleChange = (newRole) => {
+    if (newRole === 'ROLE_SELECT' || newRole === 'ROLE_SELECTION') {
+      setActiveRole('ROLE_SELECTION');
+      setActiveTab('role_select');
+      return;
+    }
+
+    const currentRole = currentUser?.role;
+    const isLoggedIn = Boolean(currentUser?.token && currentUser?.isLoggedIn);
+
+    // If currently logged in under a different role, require explicit confirmation before switching
+    if (isLoggedIn && currentRole && currentRole !== newRole) {
+      setRoleSwitchPrompt({ fromRole: currentRole, toRole: newRole });
+      return;
+    }
+
     setActiveRole(newRole);
     setActiveTab(newRole === 'DONOR' ? 'donor_dashboard' : 'dashboard');
   };
@@ -135,12 +154,15 @@ export default function App() {
     }
   };
 
-  // Handle Logout
-  const handleLogout = () => {
+  // Handle Logout safely with redirection to role-selection portal
+  const handleLogout = (goToRoleSelect = true) => {
     localStorage.removeItem('haemopulse_user');
+    localStorage.removeItem('token');
     setCurrentUser(null);
-    setActiveRole('DONOR');
-    setActiveTab('donor_dashboard');
+    if (goToRoleSelect) {
+      setActiveRole('DONOR');
+      setActiveTab('role_select');
+    }
   };
 
   // Persist requisitions before changing the UI. No optimistic/fake request rows.
@@ -222,6 +244,18 @@ export default function App() {
 
   // Render Page Content
   const renderContent = () => {
+    // Role selection screen after logout or portal navigation
+    if (activeTab === 'role_select') {
+      return (
+        <RoleSelection
+          onSelectRole={(selectedRole) => {
+            setActiveRole(selectedRole);
+            setActiveTab(selectedRole === 'DONOR' ? 'donor_dashboard' : 'dashboard');
+          }}
+        />
+      );
+    }
+
     // If donor tab selected
     if (activeRole === 'DONOR' || activeTab.startsWith('donor_')) {
       return (
@@ -242,12 +276,20 @@ export default function App() {
           const isHospitalOrAdmin = ['HOSPITAL', 'ROLE_HOSPITAL', 'ADMIN', 'ROLE_ADMIN'].includes(
             String(currentUser?.role || '').toUpperCase()
           );
+          if (!isHospitalOrAdmin) {
+            return (
+              <HospitalAuth
+                onAuthSuccess={handleAuthSuccess}
+                onSwitchToDonor={() => handleRoleChange('DONOR')}
+              />
+            );
+          }
           return (
             <HospitalDashboard 
               donorsList={donorsList} 
               requestsList={requestsList} 
               onRequestCreated={handleRequestCreated}
-              currentUser={isHospitalOrAdmin ? currentUser : null}
+              currentUser={currentUser}
             />
           );
         }
@@ -266,6 +308,7 @@ export default function App() {
             donorsList={donorsList}
             requestsList={requestsList}
             onDeleteDonor={handleDeleteDonor}
+            onAuthSuccess={handleAuthSuccess}
           />
         );
 
@@ -320,6 +363,50 @@ export default function App() {
         </main>
       </div>
 
+      {/* Role Switch Confirmation Modal */}
+      {roleSwitchPrompt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center space-x-3 pb-3 border-b border-slate-800">
+              <div className="w-10 h-10 rounded-xl bg-blood-950 border border-blood-800 flex items-center justify-center text-blood-400">
+                <ShieldAlert className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Role Switch Confirmation</h3>
+                <p className="text-xs text-slate-400">Separate authentication is required for each portal.</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              You are currently signed in as a <strong className="text-white">{roleSwitchPrompt.fromRole}</strong>.
+              To access the <strong className="text-white">{roleSwitchPrompt.toRole}</strong> interface, an authorized {roleSwitchPrompt.toRole.toLowerCase()} account is required.
+            </p>
+
+            <div className="flex flex-col sm:flex-row items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setRoleSwitchPrompt(null)}
+                className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition"
+              >
+                Cancel / Stay Signed In
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const targetRole = roleSwitchPrompt.toRole;
+                  setRoleSwitchPrompt(null);
+                  handleLogout(false);
+                  setActiveRole(targetRole);
+                  setActiveTab(targetRole === 'DONOR' ? 'donor_dashboard' : 'dashboard');
+                }}
+                className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-blood-700 hover:bg-blood-600 text-white text-xs font-bold transition"
+              >
+                Log Out &amp; Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

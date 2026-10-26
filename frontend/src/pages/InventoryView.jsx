@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { getApiBaseUrl } from '../api/config';
 import axios from 'axios';
-import { Package, PlusCircle, CheckCircle, AlertCircle, RefreshCw } from 'lucide-react';
+import { Package, PlusCircle, CheckCircle, AlertCircle, RefreshCw, Database, ShieldAlert } from 'lucide-react';
 
-const InventoryView = () => {
+const InventoryView = ({ currentUser }) => {
   const [inventory, setInventory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [formData, setFormData] = useState({
@@ -14,30 +14,55 @@ const InventoryView = () => {
   const [submitting, setSubmitting] = useState(false);
   const [msg, setMsg] = useState({ type: '', text: '' });
 
-  const token = localStorage.getItem('token');
+  const token = currentUser?.token || (() => {
+    try {
+      return JSON.parse(localStorage.getItem('haemopulse_user') || '{}')?.token;
+    } catch {
+      return null;
+    }
+  })();
+
+  const isAuthorized = Boolean(
+    token && ['HOSPITAL', 'ROLE_HOSPITAL', 'ADMIN', 'ROLE_ADMIN', 'STAFF', 'ROLE_STAFF'].includes(
+      String(currentUser?.role || '').toUpperCase()
+    )
+  );
+
   const API_BASE = getApiBaseUrl();
 
-  const fetchInventory = async () => {
+  const fetchInventory = useCallback(async () => {
+    if (!token || !isAuthorized) {
+      setLoading(false);
+      setInventory([]);
+      return;
+    }
     try {
       setLoading(true);
-      const res = await axios.get(`${API_BASE}/api/inventory`, {
+      const res = await axios.get(`${API_BASE}/api/v1/inventory`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      setInventory(res.data);
+      setInventory(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       console.error("Failed to load inventory", err);
+      setInventory([]);
     } finally {
       setLoading(false);
     }
-  };
+  }, [token, API_BASE]);
 
   useEffect(() => {
     fetchInventory();
-  }, []);
+  }, [fetchInventory]);
 
   const handleAddStock = async (e) => {
     e.preventDefault();
     setMsg({ type: '', text: '' });
+
+    if (!token || !isAuthorized) {
+      setMsg({ type: 'error', text: 'Sign in with an authorized hospital or administrator account to update inventory.' });
+      return;
+    }
+
     if (parseInt(formData.units, 10) <= 0) {
       setMsg({ type: 'error', text: 'Stock quantity must be greater than zero.' });
       return;
@@ -53,7 +78,7 @@ const InventoryView = () => {
         headers: { Authorization: `Bearer ${token}` }
       });
 
-      setMsg({ type: 'success', text: res.data.message });
+      setMsg({ type: 'success', text: res.data.message || 'Inventory updated successfully.' });
       setFormData({ blood_group: 'A+', units: 5, expiry_date: '' });
       fetchInventory();
     } catch (err) {
@@ -64,107 +89,131 @@ const InventoryView = () => {
   };
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
-      <div className="flex justify-between items-center">
+    <div className="space-y-6">
+      <div className="p-6 rounded-2xl glass-panel border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">Blood Inventory Stock Management</h1>
-          <p className="text-gray-500 text-sm">Monitor and update real-time hospital blood reserves</p>
+          <div className="flex items-center space-x-2 text-xs font-semibold text-blood-400 mb-1">
+            <Database className="w-4 h-4" />
+            <span>Real-time Blood Bank Stock</span>
+          </div>
+          <h2 className="text-2xl font-black text-white">Blood Inventory Stock Management</h2>
+          <p className="text-xs text-slate-400">
+            Monitor verified blood reserves, expiry windows, and update unit quantities.
+          </p>
         </div>
         <button
           onClick={fetchInventory}
-          className="text-gray-600 hover:text-gray-900 border px-3 py-1.5 rounded-lg flex items-center space-x-1 text-sm bg-white shadow-sm"
+          disabled={loading || !token}
+          className="shrink-0 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3.5 py-2 text-slate-200 text-xs font-bold flex items-center space-x-1.5 transition disabled:opacity-50"
         >
-          <RefreshCw className="w-4 h-4" />
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
           <span>Refresh Stock</span>
         </button>
       </div>
 
+      {!token && (
+        <div role="alert" className="p-4 rounded-xl border border-amber-800 bg-amber-950/40 text-xs text-amber-200 flex items-center space-x-2">
+          <ShieldAlert className="w-4 h-4 text-amber-400 flex-shrink-0" />
+          <span>Sign in with an authorized hospital or administrator account to view and update blood stock inventory.</span>
+        </div>
+      )}
+
+      {token && !isAuthorized && (
+        <div role="alert" className="p-4 rounded-xl border border-rose-800 bg-rose-950/40 text-xs text-rose-200 flex items-center space-x-2">
+          <ShieldAlert className="w-4 h-4 text-rose-400 flex-shrink-0" />
+          <span>Access restricted: Detailed blood inventory management is restricted to authorized Hospital and Administrator accounts.</span>
+        </div>
+      )}
+
       {msg.text && (
-        <div className={`p-4 rounded-lg text-sm flex items-center space-x-2 border ${
-          msg.type === 'success' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'
+        <div className={`p-4 rounded-xl text-xs font-bold flex items-center space-x-2 border ${
+          msg.type === 'success' ? 'bg-emerald-950/60 border-emerald-800 text-emerald-300' : 'bg-rose-950/60 border-rose-800 text-rose-300'
         }`}>
-          {msg.type === 'success' ? <CheckCircle className="w-5 h-5 flex-shrink-0" /> : <AlertCircle className="w-5 h-5 flex-shrink-0" />}
+          {msg.type === 'success' ? <CheckCircle className="w-4 h-4 flex-shrink-0" /> : <AlertCircle className="w-4 h-4 flex-shrink-0" />}
           <span>{msg.text}</span>
         </div>
       )}
 
       {/* Add Stock Form */}
-      <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
-        <h2 className="text-lg font-semibold text-gray-800 mb-4 flex items-center space-x-2">
-          <PlusCircle className="w-5 h-5 text-red-600" />
-          <span>Add Units to Repository</span>
-        </h2>
+      <div className="p-5 rounded-2xl glass-panel border border-slate-800 space-y-4">
+        <h3 className="text-sm font-bold text-white flex items-center space-x-2">
+          <PlusCircle className="w-4 h-4 text-blood-400" />
+          <span>Add Units to Blood Stock</span>
+        </h3>
         <form onSubmit={handleAddStock} className="grid grid-cols-1 sm:grid-cols-4 gap-4 items-end">
           <div>
-            <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">Blood Group</label>
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Blood Group</label>
             <select
               value={formData.blood_group}
               onChange={(e) => setFormData({ ...formData, blood_group: e.target.value })}
-              className="w-full border rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-red-500 outline-none"
+              className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-3 py-2 text-xs font-bold focus:border-blood-500 outline-none"
             >
               {['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].map(bg => (
-                <option key={bg} value={bg}>{bg}</option>
+                <option key={bg} value={bg} className="bg-slate-900 text-white">{bg}</option>
               ))}
             </select>
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">Units to Add</label>
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Units to Add</label>
             <input
               type="number"
               min="1"
               required
               value={formData.units}
               onChange={(e) => setFormData({ ...formData, units: e.target.value })}
-              className="w-full border rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-red-500 outline-none"
+              className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-3 py-2 text-xs font-bold focus:border-blood-500 outline-none"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">Expiry Date (Optional)</label>
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Expiry Date (Optional)</label>
             <input
               type="date"
               value={formData.expiry_date}
               onChange={(e) => setFormData({ ...formData, expiry_date: e.target.value })}
-              className="w-full border rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-red-500 outline-none"
+              className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-3 py-2 text-xs font-bold focus:border-blood-500 outline-none"
             />
           </div>
 
           <button
             type="submit"
-            disabled={submitting}
-            className="w-full bg-red-600 hover:bg-red-700 text-white font-medium p-2.5 rounded-lg shadow-sm transition text-sm flex items-center justify-center space-x-1"
+            disabled={submitting || !token}
+            className="w-full bg-blood-700 hover:bg-blood-600 text-white text-xs font-bold py-2.5 rounded-xl shadow-sm transition flex items-center justify-center space-x-1.5 disabled:opacity-50"
           >
-            <Package className="w-4 h-4" />
+            <Package className="w-3.5 h-3.5" />
             <span>{submitting ? 'Saving...' : 'Add Stock'}</span>
           </button>
         </form>
       </div>
 
       {/* Current Inventory Display */}
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-        <div className="p-4 border-b bg-gray-50">
-          <h3 className="font-semibold text-gray-800 text-sm">Persisted Blood Stock</h3>
+      <div className="rounded-2xl glass-panel border border-slate-800 overflow-hidden">
+        <div className="p-4 border-b border-slate-800 bg-slate-900/80 flex items-center justify-between">
+          <h3 className="text-xs font-bold text-white uppercase tracking-wider">Persisted Blood Stock</h3>
+          <span className="text-[10px] text-slate-400 font-mono">
+            {inventory.reduce((sum, item) => sum + Number(item.units || 0), 0)} Total Units
+          </span>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 p-6">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 p-5">
           {['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].map(bg => {
             const item = inventory.find(i => i.blood_group === bg);
             const units = item ? item.units : 0;
             return (
-              <div key={bg} className="border rounded-xl p-4 flex flex-col justify-between hover:shadow-sm transition">
+              <div key={bg} className="bg-slate-900/60 border border-slate-800/90 rounded-xl p-4 flex flex-col justify-between hover:border-slate-700 transition">
                 <div className="flex justify-between items-center mb-2">
-                  <span className="text-xl font-black text-red-600">{bg}</span>
-                  <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
-                    units > 10 ? 'bg-green-100 text-green-700' :
-                    units > 0 ? 'bg-yellow-100 text-yellow-700' :
-                    'bg-red-100 text-red-700'
+                  <span className="text-xl font-black text-blood-400">{bg}</span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
+                    units > 10 ? 'bg-emerald-950 text-emerald-300 border-emerald-800' :
+                    units > 0 ? 'bg-amber-950 text-amber-300 border-amber-800' :
+                    'bg-slate-950 text-slate-400 border-slate-800'
                   }`}>
                     {units > 10 ? 'Available' : units > 0 ? 'Low Stock' : 'Out of Stock'}
                   </span>
                 </div>
                 <div>
-                  <div className="text-3xl font-bold text-gray-800">{units}</div>
-                  <div className="text-xs text-gray-400 mt-1">
+                  <div className="text-3xl font-extrabold text-white">{units}</div>
+                  <div className="text-[11px] text-slate-400 mt-1 truncate">
                     {item?.expiry_date ? `Expires: ${item.expiry_date}` : 'No expiry set'}
                   </div>
                 </div>

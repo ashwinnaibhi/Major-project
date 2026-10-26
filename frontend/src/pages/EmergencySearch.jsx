@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { getApiBaseUrl } from '../api/config';
 import axios from 'axios';
-import { Search, AlertCircle, Send, CheckCircle2, MapPin, Phone, UserCheck } from 'lucide-react';
+import { Search, AlertCircle, Send, CheckCircle2, MapPin, Phone, UserCheck, ShieldAlert } from 'lucide-react';
 
-const EmergencySearch = () => {
+const EmergencySearch = ({ currentUser }) => {
   const [bloodGroup, setBloodGroup] = useState('A+');
   const [donors, setDonors] = useState([]);
   const [compatibleGroups, setCompatibleGroups] = useState([]);
@@ -13,7 +13,7 @@ const EmergencySearch = () => {
   const [alertError, setAlertError] = useState('');
   const [hasSearched, setHasSearched] = useState(false);
 
-  const token = localStorage.getItem('token');
+  const token = currentUser?.token || localStorage.getItem('token');
   const API_BASE = getApiBaseUrl();
 
   const handleSearch = async (e) => {
@@ -23,9 +23,10 @@ const EmergencySearch = () => {
     setAlertError('');
     setHasSearched(true);
     try {
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const res = await axios.get(`${API_BASE}/api/donors/emergency-search`, {
         params: { blood_group: bloodGroup },
-        headers: { Authorization: `Bearer ${token}` }
+        headers
       });
       setDonors(res.data.donors || []);
       setCompatibleGroups(res.data.compatible_groups || []);
@@ -38,9 +39,6 @@ const EmergencySearch = () => {
       setLoading(false);
     }
   };
-
-  // Do NOT auto-search on mount — require the user to click Search
-  // This prevents confusing results when the blood group changes
 
   const toggleDonorSelect = (id) => {
     if (selectedDonors.includes(id)) {
@@ -55,6 +53,10 @@ const EmergencySearch = () => {
       setAlertError('Please select at least one donor to alert.');
       return;
     }
+    if (!token) {
+      setAlertError('Sign in with an authorized hospital or administrator account to broadcast emergency alerts.');
+      return;
+    }
     setAlertError('');
     try {
       const res = await axios.post(`${API_BASE}/api/donors/emergency-alert`, {
@@ -65,42 +67,48 @@ const EmergencySearch = () => {
       }, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      setAlertSuccess(res.data.message);
+      setAlertSuccess(res.data.message || 'Emergency alerts dispatched successfully.');
     } catch (err) {
-      setAlertError('Failed to dispatch emergency alerts.');
+      setAlertError(err.response?.data?.detail || 'Failed to dispatch emergency alerts.');
     }
   };
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-800">Emergency Donor Search & Alert</h1>
-        <p className="text-gray-500 text-sm">
-          Dynamic search based on verified blood compatibility and donor location.
-        </p>
+    <div className="space-y-6">
+      <div className="p-6 rounded-2xl glass-panel border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center space-x-2 text-xs font-semibold text-blood-400 mb-1">
+            <ShieldAlert className="w-4 h-4" />
+            <span>Geo-Targeted Emergency Dispatch</span>
+          </div>
+          <h2 className="text-2xl font-black text-white">Emergency Donor Search &amp; Alert</h2>
+          <p className="text-xs text-slate-400">
+            Dynamic donor search based on verified blood compatibility and location coordinates.
+          </p>
+        </div>
       </div>
 
       {/* Search Bar */}
-      <form onSubmit={handleSearch} className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm flex flex-wrap gap-4 items-center justify-between">
+      <form onSubmit={handleSearch} className="p-5 rounded-2xl glass-panel border border-slate-800 flex flex-wrap gap-4 items-center justify-between">
         <div className="flex items-center space-x-3">
-          <label className="text-sm font-medium text-gray-700">Patient Blood Group Needed:</label>
+          <label className="text-xs font-bold text-slate-300 uppercase tracking-wider">Patient Blood Group Needed:</label>
           <select
             value={bloodGroup}
             onChange={(e) => setBloodGroup(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm font-semibold focus:ring-2 focus:ring-red-500 outline-none"
+            className="bg-slate-900 border border-slate-700 text-white rounded-xl px-3 py-2 text-xs font-bold focus:border-blood-500 outline-none"
           >
             {['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].map(bg => (
-              <option key={bg} value={bg}>{bg}</option>
+              <option key={bg} value={bg} className="bg-slate-900 text-white">{bg}</option>
             ))}
           </select>
         </div>
 
         {compatibleGroups.length > 0 && (
-          <div className="flex items-center space-x-2 text-xs text-gray-600 bg-gray-50 px-3 py-2 rounded-lg border">
-            <span className="font-semibold text-gray-700">Compatible Donors:</span>
+          <div className="flex items-center space-x-2 text-xs text-slate-400 bg-slate-900/90 px-3 py-2 rounded-xl border border-slate-800">
+            <span className="font-semibold text-slate-300">Compatible Groups:</span>
             <div className="flex gap-1">
               {compatibleGroups.map(cg => (
-                <span key={cg} className="bg-red-50 border border-red-200 text-red-700 px-1.5 py-0.5 rounded font-mono font-bold">
+                <span key={cg} className="bg-blood-950/80 border border-blood-800 text-blood-400 px-2 py-0.5 rounded text-xs font-mono font-bold">
                   {cg}
                 </span>
               ))}
@@ -111,7 +119,7 @@ const EmergencySearch = () => {
         <button
           type="submit"
           disabled={loading}
-          className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center space-x-2 shadow-sm transition"
+          className="bg-blood-700 hover:bg-blood-600 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-2 shadow-sm transition disabled:opacity-50"
         >
           <Search className="w-4 h-4" />
           <span>{loading ? 'Searching...' : hasSearched ? 'Refresh Donors' : 'Search Donors'}</span>
@@ -119,30 +127,30 @@ const EmergencySearch = () => {
       </form>
 
       {alertSuccess && (
-        <div className="p-4 bg-green-50 border border-green-200 text-green-700 rounded-lg flex items-center space-x-2 text-sm">
-          <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
+        <div className="p-4 bg-emerald-950/60 border border-emerald-800 text-emerald-300 rounded-xl flex items-center space-x-2 text-xs font-bold">
+          <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
           <span>{alertSuccess}</span>
         </div>
       )}
 
       {alertError && (
-        <div className="p-4 bg-red-50 border border-red-200 text-red-700 rounded-lg flex items-center space-x-2 text-sm">
-          <AlertCircle className="w-5 h-5 flex-shrink-0" />
+        <div className="p-4 bg-rose-950/60 border border-rose-800 text-rose-300 rounded-xl flex items-center space-x-2 text-xs font-bold" role="alert">
+          <AlertCircle className="w-4 h-4 flex-shrink-0" />
           <span>{alertError}</span>
         </div>
       )}
 
       {/* Donor Results */}
       {hasSearched && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-          <div className="p-4 border-b bg-gray-50 flex justify-between items-center">
-            <span className="text-sm font-semibold text-gray-700">
+        <div className="rounded-2xl glass-panel border border-slate-800 overflow-hidden space-y-0">
+          <div className="p-4 border-b border-slate-800 bg-slate-900/80 flex justify-between items-center">
+            <span className="text-xs font-bold text-white uppercase tracking-wider">
               Matching Eligible Donors ({donors.length})
             </span>
             {donors.length > 0 && (
               <button
                 onClick={sendAlerts}
-                className="bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1.5 shadow-sm transition"
+                className="bg-amber-700 hover:bg-amber-600 text-white px-3 py-1.5 rounded-xl text-xs font-bold flex items-center space-x-1.5 shadow-sm transition"
               >
                 <Send className="w-3.5 h-3.5" />
                 <span>Broadcast Emergency Alert ({selectedDonors.length})</span>
@@ -150,35 +158,35 @@ const EmergencySearch = () => {
             )}
           </div>
 
-          <div className="divide-y divide-gray-100">
+          <div className="divide-y divide-slate-800">
             {donors.length === 0 ? (
-              <div className="p-8 text-center text-gray-400">
+              <div className="p-8 text-center text-slate-400 text-xs">
                 No compatible available donors found in the immediate vicinity for {bloodGroup}.
               </div>
             ) : (
               donors.map((d) => (
-                <div key={d.id} className="p-4 flex items-center justify-between hover:bg-gray-50 transition">
+                <div key={d.id} className="p-4 flex items-center justify-between hover:bg-slate-900/40 transition">
                   <div className="flex items-center space-x-4">
                     <input
                       type="checkbox"
                       checked={selectedDonors.includes(d.id)}
                       onChange={() => toggleDonorSelect(d.id)}
-                      className="h-4 w-4 text-red-600 rounded border-gray-300 focus:ring-red-500 cursor-pointer"
+                      className="h-4 w-4 text-blood-600 rounded bg-slate-900 border-slate-700 focus:ring-blood-500 cursor-pointer"
                     />
                     <div>
                       <div className="flex items-center space-x-2">
-                        <span className="font-semibold text-gray-900 text-sm">{d.name || d.full_name}</span>
-                        <span className="bg-red-100 text-red-700 font-bold px-2 py-0.5 rounded text-xs">
+                        <span className="font-bold text-white text-xs">{d.name || d.full_name}</span>
+                        <span className="bg-blood-950 text-blood-400 border border-blood-800 font-bold px-2 py-0.5 rounded text-[10px]">
                           {d.blood_group}
                         </span>
                       </div>
-                      <div className="flex items-center space-x-4 text-xs text-gray-500 mt-1">
+                      <div className="flex items-center space-x-4 text-[11px] text-slate-400 mt-1">
                         <span className="flex items-center space-x-1">
-                          <MapPin className="w-3.5 h-3.5" />
+                          <MapPin className="w-3.5 h-3.5 text-blood-400" />
                           <span>{d.taluk || '—'}, {d.district || '—'} (~{d.estimated_distance_km} km)</span>
                         </span>
                         <span className="flex items-center space-x-1">
-                          <Phone className="w-3.5 h-3.5" />
+                          <Phone className="w-3.5 h-3.5 text-emerald-400" />
                           <span>{d.phone || 'Contact on file'}</span>
                         </span>
                       </div>
@@ -186,7 +194,7 @@ const EmergencySearch = () => {
                   </div>
 
                   <div className="flex items-center space-x-2">
-                    <span className="inline-flex items-center text-xs font-medium text-green-700 bg-green-50 px-2 py-1 rounded-full border border-green-200">
+                    <span className="inline-flex items-center text-[11px] font-bold text-emerald-400 bg-emerald-950/80 px-2.5 py-1 rounded-full border border-emerald-800">
                       <UserCheck className="w-3 h-3 mr-1" />
                       Available
                     </span>

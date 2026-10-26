@@ -7,7 +7,7 @@ import { getApiBaseUrl, getMlServiceUrl } from '../api/config';
 const API_BASE = getApiBaseUrl();
 const ML_API_BASE = getMlServiceUrl();
 
-export default function AdminDashboard({ onNavigate, donorsList = [], requestsList = [], currentUser, onDeleteDonor }) {
+export default function AdminDashboard({ onNavigate, donorsList = [], requestsList = [], currentUser, onDeleteDonor, onAuthSuccess }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 25;
@@ -15,7 +15,45 @@ export default function AdminDashboard({ onNavigate, donorsList = [], requestsLi
   const [modelMetrics, setModelMetrics] = useState(null);
   const [operationNotice, setOperationNotice] = useState('');
   const [operationError, setOperationError] = useState(false);
+  const [adminEmail, setAdminEmail] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [adminLoginLoading, setAdminLoginLoading] = useState(false);
+  const [adminLoginError, setAdminLoginError] = useState('');
+
   const isAdmin = Boolean(currentUser?.token && currentUser?.isLoggedIn && currentUser?.role === 'ADMIN');
+
+  const handleAdminLogin = async (e) => {
+    e.preventDefault();
+    setAdminLoginError('');
+    setAdminLoginLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: adminEmail.trim(), password: adminPassword })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || data.message || 'Administrator authentication failed.');
+
+      const role = String(data.user?.role || data.role || '').toUpperCase().replace(/^ROLE_/, '');
+      if (role !== 'ADMIN') {
+        throw new Error('Access denied: this account does not possess administrator credentials.');
+      }
+
+      if (typeof onAuthSuccess === 'function') {
+        onAuthSuccess({
+          ...data.user,
+          role: 'ADMIN',
+          token: data.token || data.access_token,
+          isLoggedIn: true
+        });
+      }
+    } catch (err) {
+      setAdminLoginError(err.message || 'Login failed.');
+    } finally {
+      setAdminLoginLoading(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -143,7 +181,57 @@ export default function AdminDashboard({ onNavigate, donorsList = [], requestsLi
       </div>
 
       {operationNotice && <div role="status" className={`rounded-xl border p-3 text-xs ${operationError ? 'border-rose-800 bg-rose-950/60 text-rose-200' : 'border-emerald-800 bg-emerald-950/50 text-emerald-200'}`}>{operationNotice}</div>}
-      {!isAdmin && <div role="alert" className="rounded-xl border border-amber-800 bg-amber-950/40 p-3 text-xs text-amber-200">Sign in with an administrator account to view protected donor records and inventory metrics. Choosing the Admin view does not grant access.</div>}
+      {!isAdmin && (
+        <div className="p-6 rounded-2xl glass-panel border border-slate-800 space-y-4 max-w-md mx-auto">
+          <div className="flex items-center space-x-3 pb-3 border-b border-slate-800">
+            <div className="w-10 h-10 rounded-xl bg-amber-700 flex items-center justify-center">
+              <BrainCircuit className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-white">Administrator Authentication</h3>
+              <p className="text-xs text-slate-400">Sign in to unlock protected donor records and inventory stock.</p>
+            </div>
+          </div>
+
+          {adminLoginError && (
+            <div role="alert" className="p-3 bg-rose-950/60 border border-rose-800 text-rose-300 text-xs rounded-xl font-bold">
+              {adminLoginError}
+            </div>
+          )}
+
+          <form onSubmit={handleAdminLogin} className="space-y-3 text-xs">
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Admin Email</label>
+              <input
+                type="email"
+                required
+                value={adminEmail}
+                onChange={(e) => setAdminEmail(e.target.value)}
+                placeholder="admin@example.org"
+                className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-3 py-2 text-xs font-bold focus:border-blood-500 outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Password</label>
+              <input
+                type="password"
+                required
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-3 py-2 text-xs font-bold focus:border-blood-500 outline-none"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={adminLoginLoading}
+              className="w-full bg-blood-700 hover:bg-blood-600 text-white text-xs font-bold py-2.5 rounded-xl shadow-md transition disabled:opacity-50"
+            >
+              {adminLoginLoading ? 'Verifying Credentials…' : 'Sign In as Administrator'}
+            </button>
+          </form>
+        </div>
+      )}
 
       {/* Registered Donors List Visible to Record Manager / Admin */}
       <div className="p-5 rounded-2xl glass-panel border border-slate-800 space-y-4">
