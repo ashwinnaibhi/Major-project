@@ -12,6 +12,8 @@ import hashlib
 import hmac
 import secrets
 from typing import Optional, List, Any
+import logging
+logger = logging.getLogger('haemopulse')
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Query, status, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -339,6 +341,18 @@ class HospitalProfilePayload(BaseModel):
     longitude: Optional[float] = None
 
 
+class HospitalRegisterPayload(BaseModel):
+    hospital_name: str
+    email: str
+    phone: str
+    password: str
+    address: str
+    district: str
+    taluk: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
+
 class CreateRequestPayload(BaseModel):
     hospital_name: Optional[str] = ""
     hospital_address: Optional[str] = ""
@@ -617,6 +631,62 @@ def register_donor_v1(req: RegisterDonorRequest, conn: sqlite3.Connection = Depe
         "user": resp["user"],
         "donor": resp.get("donor"),
         "email_delivery": email_delivery,
+    }
+
+
+@app.post("/api/v1/auth/hospital/register")
+def register_hospital(req: HospitalRegisterPayload, conn: Any = Depends(get_db)):
+    clean_email = req.email.strip().lower()
+    if not clean_email or "@" not in clean_email:
+        raise HTTPException(status_code=400, detail="A valid email address is required.")
+    if len(req.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must contain at least 8 characters.")
+    hospital_name = req.hospital_name.strip()
+    if not hospital_name:
+        raise HTTPException(status_code=400, detail="Hospital name is required.")
+    address = req.address.strip()
+    if not address:
+        raise HTTPException(status_code=400, detail="Hospital address is required.")
+    district = req.district.strip()
+    if not district:
+        raise HTTPException(status_code=400, detail="Hospital district is required.")
+
+    existing = conn.execute(
+        "SELECT id FROM users WHERE LOWER(email) = LOWER(?)", (clean_email,)
+    ).fetchone()
+    if existing:
+        raise HTTPException(status_code=400, detail="An account with this email already exists.")
+
+    pw_hash = hash_password(req.password)
+    now_iso = datetime.datetime.utcnow().isoformat(sep=" ", timespec="seconds")
+
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO users (name, email, password, phone, role, is_verified, status)
+           VALUES (?, ?, ?, ?, 'ROLE_HOSPITAL', 1, 'ACTIVE')""",
+        (hospital_name, clean_email, pw_hash, req.phone.strip()),
+    )
+    user_id = cur.lastrowid
+
+    cur.execute(
+        """INSERT INTO hospital_profiles
+             (hospital_user_id, hospital_name, address, district, taluk, latitude, longitude, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (user_id, hospital_name, address, district, req.taluk or None, req.latitude, req.longitude, now_iso, now_iso),
+    )
+    conn.commit()
+
+    user_row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    auth_resp = _build_auth_response(dict(user_row), conn)
+    return {
+        "success": True,
+        "message": f"Hospital '{hospital_name}' registered successfully.",
+        "token": auth_resp["token"],
+        "access_token": auth_resp["access_token"],
+        "token_type": "bearer",
+        "role": auth_resp["role"],
+        "user": auth_resp["user"],
+        "hospital_profile": auth_resp["user"].get("hospital_profile"),
     }
 
 
@@ -1588,9 +1658,15 @@ def nearby_blood(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/inventory")
+@app.get("/api/v1/inventory")
 def get_global_inventory(user: dict = Depends(get_current_user),
-                         conn: sqlite3.Connection = Depends(get_db)):
-    role = user["role"]
+                         conn: Any = Depends(get_db)):
+    role = user.get("role", "")
+    if role not in ("ROLE_ADMIN", "ROLE_HOSPITAL"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden: only Hospital or Administrator roles can view detailed inventory."
+        )
     if role == "ROLE_HOSPITAL":
         # Return this hospital's own inventory using hospital_blood_inventory
         rows = conn.execute(
@@ -2107,12 +2183,12 @@ def get_notification_assignees(user: dict = Depends(get_current_user),
 # HEALTH CHECK
 # ─────────────────────────────────────────────────────────────────────────────
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def root():
     return {"service": "HaemoPulse Blood Bank API", "version": "3.0.0", "status": "healthy"}
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     return {"status": "ok"}
 

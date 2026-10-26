@@ -97,6 +97,7 @@ export default function DonorDashboard({
   const [emergencyResponsesHistory, setEmergencyResponsesHistory] = useState([]);
   const [emergencyHistoryFilter, setEmergencyHistoryFilter] = useState('ALL');
   const [isLoadingResponsesHistory, setIsLoadingResponsesHistory] = useState(false);
+  const [emergencyHistoryError, setEmergencyHistoryError] = useState('');
   const [availabilityPrediction, setAvailabilityPrediction] = useState({ status: 'idle', data: null, message: '' });
   const [appointmentError, setAppointmentError] = useState('');
   const [requestActionBusy, setRequestActionBusy] = useState({});
@@ -109,6 +110,7 @@ export default function DonorDashboard({
       return;
     }
     setIsLoadingResponsesHistory(true);
+    setEmergencyHistoryError('');
     try {
       const res = await fetch(`${API_BASE}/api/v1/donors/me/emergency-responses`, {
         headers: { Authorization: `Bearer ${currentUser.token}` }
@@ -116,9 +118,13 @@ export default function DonorDashboard({
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) setEmergencyResponsesHistory(data);
+        setEmergencyHistoryError('');
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setEmergencyHistoryError(errData.detail || 'Unable to load emergency response history.');
       }
     } catch (_) {
-      // Keep existing state
+      setEmergencyHistoryError('Network error: unable to load emergency response history.');
     } finally {
       setIsLoadingResponsesHistory(false);
     }
@@ -1380,6 +1386,17 @@ export default function DonorDashboard({
             {/* List */}
             {isLoadingResponsesHistory ? (
               <p className="text-xs text-slate-500 py-4 text-center">Loading response history…</p>
+            ) : emergencyHistoryError ? (
+              <div className="p-4 text-center rounded-xl bg-rose-950/40 border border-rose-800 text-rose-300 text-xs space-y-2" role="alert">
+                <p>{emergencyHistoryError}</p>
+                <button
+                  type="button"
+                  onClick={fetchEmergencyResponsesHistory}
+                  className="px-3 py-1 rounded-lg bg-rose-900/60 hover:bg-rose-800 text-white text-[11px] font-bold transition-all"
+                >
+                  Retry
+                </button>
+              </div>
             ) : emergencyResponsesHistory.length === 0 ? (
               <div className="p-6 text-center text-slate-500 text-xs rounded-xl bg-slate-900/40 border border-slate-800">
                 You have not responded to any emergency requisitions yet.

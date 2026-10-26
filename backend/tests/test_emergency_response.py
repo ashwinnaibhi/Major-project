@@ -87,6 +87,14 @@ class EmergencyResponseTestCase(unittest.TestCase):
         cls.hospital_user_id = ch.lastrowid
         cls.hospital_token = server.create_access_token({"sub": "koppa_hospital@haemopulse.invalid", "id": cls.hospital_user_id, "role": "ROLE_HOSPITAL"})
 
+        # Seed admin user
+        ca = cls.conn.execute(
+            "INSERT INTO users (name, email, password, phone, role, status, is_verified) VALUES (?, ?, 'hash', '+919900112233', 'ROLE_ADMIN', 'ACTIVE', 1)",
+            ("System Admin", "admin_emergency@haemopulse.invalid")
+        )
+        cls.admin_user_id = ca.lastrowid
+        cls.admin_token = server.create_access_token({"sub": "admin_emergency@haemopulse.invalid", "id": cls.admin_user_id, "role": "ROLE_ADMIN"})
+
         # Seed emergency blood request 1
         cr1 = cls.conn.execute(
             """INSERT INTO blood_requests
@@ -288,6 +296,127 @@ class EmergencyResponseTestCase(unittest.TestCase):
         hosp_res = client.get("/api/v1/hospitals/donations", headers={"Authorization": f"Bearer {self.hospital_token}"})
         self.assertEqual(hosp_res.status_code, 200)
         self.assertIsInstance(hosp_res.json(), list)
+
+    def test_14_admin_emergency_responses_authorization_and_data(self):
+        """GET /api/v1/admin/emergency-responses is restricted to ROLE_ADMIN and blocked for others."""
+        # 1. Admin succeeds (HTTP 200)
+        admin_res = client.get("/api/v1/admin/emergency-responses", headers={"Authorization": f"Bearer {self.admin_token}"})
+        self.assertEqual(admin_res.status_code, 200)
+        responses = admin_res.json()
+        self.assertIsInstance(responses, list)
+        self.assertGreaterEqual(len(responses), 1)
+
+        # 2. Donor is rejected (HTTP 403)
+        donor_res = client.get("/api/v1/admin/emergency-responses", headers={"Authorization": f"Bearer {self.donor1_token}"})
+        self.assertEqual(donor_res.status_code, 403)
+        self.assertIn("Administrator access required", donor_res.json().get("detail", ""))
+
+        # 3. Hospital is rejected (HTTP 403)
+        hosp_res = client.get("/api/v1/admin/emergency-responses", headers={"Authorization": f"Bearer {self.hospital_token}"})
+        self.assertEqual(hosp_res.status_code, 403)
+        self.assertIn("Administrator access required", hosp_res.json().get("detail", ""))
+
+        # 4. Unauthenticated is rejected (HTTP 401)
+        anon_res = client.get("/api/v1/admin/emergency-responses")
+        self.assertEqual(anon_res.status_code, 401)
+
+    def test_15_respond_to_request_rollback_on_database_error(self):
+        """Database execution failure during response triggers conn.rollback() and returns HTTP 500."""
+        class FailingConn:
+            def __init__(self, real_conn):
+                self._real = real_conn
+                self.rollback_called = False
+
+            def execute(self, query, params=None):
+                if "INSERT INTO emergency_request_responses" in query:
+                    raise Exception("Simulated disk I/O or constraint failure")
+                return self._real.execute(query, params) if params is not None else self._real.execute(query)
+
+            def rollback(self):
+                self.rollback_called = True
+                self._real.rollback()
+
+            def commit(self):
+                self._real.commit()
+
+        failing_conn = FailingConn(self.conn)
+        server.app.dependency_overrides[database.get_db] = lambda: failing_conn
+        try:
+            headers = {"Authorization": f"Bearer {self.donor1_token}"}
+            res = client.post(f"/api/v1/requests/{self.request1_id}/response", json={"action": "ACCEPTED"}, headers=headers)
+            self.assertEqual(res.status_code, 500)
+            self.assertIn("Database failed to record emergency response", res.json().get("detail", ""))
+            self.assertTrue(failing_conn.rollback_called, "conn.rollback() must be called on DB failure")
+        finally:
+            server.app.dependency_overrides.pop(database.get_db, None)
+
+    def test_16_postgresql_schema_and_query_parity(self):
+        """Verify PostgreSQL schema definition and query conversion for emergency responses."""
+        import re
+
+        # 1. Verify DDL contains emergency_request_responses table with exact constraints
+        ddl = database.POSTGRES_SCHEMA_DDL
+        self.assertIn("CREATE TABLE IF NOT EXISTS emergency_request_responses", ddl)
+        self.assertIn("REFERENCES blood_requests(id) ON DELETE CASCADE", ddl)
+        self.assertIn("CHECK(response IN ('ACCEPTED', 'REJECTED'))", ddl)
+        self.assertIn("UNIQUE(request_id, donor_id)", ddl)
+
+        # 2. Verify INSERT ON CONFLICT query conversion to Postgres
+        q_insert = """INSERT INTO emergency_request_responses
+                 (request_id, donor_id, response, created_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(request_id, donor_id) DO UPDATE SET
+                 response = excluded.response,
+                 created_at = excluded.created_at"""
+        converted_insert, is_insert = database._convert_query_to_postgres(q_insert)
+        self.assertTrue(is_insert)
+        self.assertIn("%s, %s, %s, %s", converted_insert)
+        self.assertNotIn("?", converted_insert)
+        self.assertTrue(converted_insert.endswith("RETURNING id"))
+        self.assertIn("ON CONFLICT(request_id, donor_id) DO UPDATE SET", converted_insert)
+
+        # 3. Verify list_requests query conversion
+        q_list = """SELECT r.*, err.response AS donor_response
+                    FROM blood_requests r
+                    LEFT JOIN emergency_request_responses err
+                      ON err.request_id = r.id AND (err.donor_id = ? OR err.donor_id = ?)
+                    WHERE r.blood_group IN (?, ?) AND r.status = 'PENDING'
+                    ORDER BY r.request_date DESC"""
+        converted_list, _ = database._convert_query_to_postgres(q_list)
+        self.assertIn("err.donor_id = %s OR err.donor_id = %s", converted_list)
+        self.assertNotIn("?", converted_list)
+
+        # 4. Verify donor history query conversion
+        q_history = """SELECT err.id AS response_id, err.request_id, err.response, err.created_at AS responded_at
+               FROM emergency_request_responses err
+               JOIN blood_requests r ON r.id = err.request_id
+               WHERE err.donor_id = ? OR err.donor_id = ?
+               ORDER BY err.created_at DESC, err.id DESC"""
+        converted_history, _ = database._convert_query_to_postgres(q_history)
+        self.assertIn("err.donor_id = %s OR err.donor_id = %s", converted_history)
+        self.assertNotIn("?", converted_history)
+
+    def test_17_postgres_lifespan_startup_schema_initialization(self):
+        """Verify application lifespan runs init_postgres_schema on startup in Postgres mode."""
+        from unittest.mock import patch, MagicMock
+        import asyncio
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn._conn.cursor.return_value = mock_cursor
+
+        with patch("server.is_postgres", return_value=True):
+            with patch("server.get_db_connection", return_value=mock_conn):
+                async def run_startup():
+                    async with server.lifespan(server.app):
+                        pass
+
+                asyncio.run(run_startup())
+
+                # Verified executed all DDL statements and committed
+                self.assertGreater(mock_cursor.execute.call_count, 10)
+                mock_conn.commit.assert_called_once()
+                mock_conn.close.assert_called_once()
 
 
 if __name__ == "__main__":
