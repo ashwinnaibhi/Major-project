@@ -28,6 +28,9 @@ from unittest.mock import patch, MagicMock
 TEMP_DIR = tempfile.mkdtemp()
 TEST_DB_PATH = os.path.join(TEMP_DIR, "test_bloodbank.db")
 ORIGINAL_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bloodbank.db")
+if not os.path.exists(ORIGINAL_DB_PATH):
+    import database
+    database.ensure_sqlite_db_ready(ORIGINAL_DB_PATH)
 shutil.copyfile(ORIGINAL_DB_PATH, TEST_DB_PATH)
 
 # Set test environment variables before importing app
@@ -57,18 +60,32 @@ import email_service
 class TestEmailVerification(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.orig_env_db = os.environ.get("BLOODBANK_DB_FILE")
+        cls.orig_db_path = database.DATABASE_PATH
+        cls.orig_server_db_path = server.DATABASE_PATH
+        os.environ["BLOODBANK_DB_FILE"] = TEST_DB_PATH
+        server.DATABASE_PATH = TEST_DB_PATH
+        database.DATABASE_PATH = TEST_DB_PATH
         cls.client = TestClient(app)
 
     @classmethod
     def tearDownClass(cls):
-        import server
-        import database
-        server.DATABASE_PATH = ORIGINAL_DB_PATH
-        database.DATABASE_PATH = ORIGINAL_DB_PATH
-        os.environ.pop("BLOODBANK_DB_FILE", None)
+        server.DATABASE_PATH = getattr(cls, "orig_server_db_path", ORIGINAL_DB_PATH)
+        database.DATABASE_PATH = getattr(cls, "orig_db_path", ORIGINAL_DB_PATH)
+        if getattr(cls, "orig_env_db", None) is not None:
+            os.environ["BLOODBANK_DB_FILE"] = cls.orig_env_db
+        else:
+            os.environ.pop("BLOODBANK_DB_FILE", None)
         shutil.rmtree(TEMP_DIR, ignore_errors=True)
 
     def setUp(self):
+        os.environ["BLOODBANK_DB_FILE"] = TEST_DB_PATH
+        server.DATABASE_PATH = TEST_DB_PATH
+        database.DATABASE_PATH = TEST_DB_PATH
+        os.environ["SMTP_HOST"] = "smtp.gmail.com"
+        os.environ["SMTP_PORT"] = "587"
+        os.environ["SMTP_USER"] = "test_sender@gmail.com"
+        os.environ["SMTP_PASS"] = "mock_app_password"
         conn = sqlite3.connect(TEST_DB_PATH)
         conn.execute("DELETE FROM users WHERE email LIKE 'test_unverified_%@example.com'")
         conn.execute("DELETE FROM donors WHERE email LIKE 'test_unverified_%@example.com'")

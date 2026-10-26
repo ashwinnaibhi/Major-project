@@ -43,6 +43,8 @@ class EmergencyResponseTestCase(unittest.TestCase):
         cls.temp_dir = tempfile.mkdtemp()
         cls.test_db = os.path.join(cls.temp_dir, "test_bloodbank.db")
         original_db = os.path.join(BACKEND_DIR, "bloodbank.db")
+        if not os.path.exists(original_db):
+            database.ensure_sqlite_db_ready(original_db)
         shutil.copyfile(original_db, cls.test_db)
 
         cls.orig_env_db = os.environ.get("BLOODBANK_DB_FILE")
@@ -128,6 +130,11 @@ class EmergencyResponseTestCase(unittest.TestCase):
         server.DATABASE_PATH = cls.orig_db_path
         if hasattr(cls, "temp_dir") and os.path.exists(cls.temp_dir):
             shutil.rmtree(cls.temp_dir, ignore_errors=True)
+
+    def setUp(self):
+        os.environ["BLOODBANK_DB_FILE"] = self.test_db
+        database.DATABASE_PATH = self.test_db
+        server.DATABASE_PATH = self.test_db
 
     def test_01_donor1_accepts_and_persists_in_database(self):
         """Donor 1 accepts request 1; verified written to database table emergency_request_responses."""

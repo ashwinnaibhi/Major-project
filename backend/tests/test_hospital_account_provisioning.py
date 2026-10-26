@@ -35,8 +35,43 @@ client = TestClient(server.app)
 class HospitalAccountProvisioningTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # Run provisioning once to ensure test database is seeded
-        provision_hospitals.provision_all_hospitals()
+        import tempfile
+        import shutil
+        cls.temp_dir = tempfile.mkdtemp()
+        cls.test_db = os.path.join(cls.temp_dir, "test_hospitals.db")
+        original_db = database.DATABASE_PATH
+        if not os.path.exists(original_db):
+            database.ensure_sqlite_db_ready(original_db)
+        shutil.copyfile(original_db, cls.test_db)
+        cls.orig_env_db = os.environ.get("BLOODBANK_DB_FILE")
+        cls.orig_db_path = database.DATABASE_PATH
+        cls.orig_server_db_path = server.DATABASE_PATH
+        os.environ["BLOODBANK_DB_FILE"] = cls.test_db
+        database.DATABASE_PATH = cls.test_db
+        server.DATABASE_PATH = cls.test_db
+        cls.conn = database.get_db_connection()
+        provision_hospitals.provision_all_hospitals(conn=cls.conn)
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            cls.conn.close()
+        except Exception:
+            pass
+        database.DATABASE_PATH = getattr(cls, "orig_db_path", database.DATABASE_PATH)
+        server.DATABASE_PATH = getattr(cls, "orig_server_db_path", server.DATABASE_PATH)
+        if getattr(cls, "orig_env_db", None) is not None:
+            os.environ["BLOODBANK_DB_FILE"] = cls.orig_env_db
+        else:
+            os.environ.pop("BLOODBANK_DB_FILE", None)
+        if hasattr(cls, "temp_dir") and os.path.exists(cls.temp_dir):
+            import shutil
+            shutil.rmtree(cls.temp_dir, ignore_errors=True)
+
+    def setUp(self):
+        os.environ["BLOODBANK_DB_FILE"] = self.test_db
+        database.DATABASE_PATH = self.test_db
+        server.DATABASE_PATH = self.test_db
 
     def test_koppa_hospital_login_with_dedicated_identity(self):
         """User ID 3 can log in using dedicated identity koppa_ghpc@haemopulse.in."""

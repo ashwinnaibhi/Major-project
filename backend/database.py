@@ -286,6 +286,261 @@ CREATE INDEX IF NOT EXISTS idx_donation_history_cert ON donation_history(UPPER(c
 CREATE UNIQUE INDEX IF NOT EXISTS idx_active_appointment_donor_email ON appointments (LOWER(TRIM(donor_email))) WHERE UPPER(TRIM(status)) IN ('SCHEDULED', 'PENDING', 'CONFIRMED', 'APPROVED');
 """
 
+SQLITE_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    role TEXT NOT NULL,
+    status TEXT DEFAULT 'ACTIVE',
+    is_verified INTEGER DEFAULT 0,
+    verification_token TEXT,
+    verification_token_expiry TEXT,
+    last_verification_email_sent_at TEXT,
+    must_change_password INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS donors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    donor_id TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    blood_group TEXT NOT NULL,
+    age INTEGER NOT NULL,
+    gender TEXT NOT NULL,
+    location TEXT NOT NULL,
+    distance_km REAL DEFAULT 5.0,
+    last_donation_days INTEGER DEFAULT 180,
+    total_donations INTEGER DEFAULT 0,
+    donation_frequency INTEGER DEFAULT 2,
+    previous_response_rate REAL DEFAULT 0.90,
+    preferred_time TEXT DEFAULT 'Morning',
+    health_score INTEGER DEFAULT 95,
+    availability_status TEXT DEFAULT 'HIGH',
+    availability_score REAL DEFAULT 91.5,
+    user_id INTEGER,
+    last_donation_date TEXT,
+    is_available INTEGER DEFAULT 1,
+    dob TEXT,
+    phone TEXT,
+    district TEXT,
+    taluk TEXT,
+    fictional_address TEXT,
+    latitude REAL,
+    longitude REAL,
+    consent TEXT,
+    response_time_hrs REAL
+);
+
+CREATE TABLE IF NOT EXISTS blood_inventory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    blood_group TEXT UNIQUE NOT NULL,
+    component_type TEXT DEFAULT 'Whole Blood',
+    units_available INTEGER DEFAULT 0,
+    expiry_date TEXT NOT NULL,
+    status TEXT DEFAULT 'AVAILABLE'
+);
+
+CREATE TABLE IF NOT EXISTS blood_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    hospital_name TEXT NOT NULL,
+    blood_group TEXT NOT NULL,
+    units_needed INTEGER NOT NULL,
+    urgency_level TEXT NOT NULL,
+    patient_name TEXT NOT NULL,
+    status TEXT DEFAULT 'PENDING',
+    request_date TEXT NOT NULL,
+    hospital_address TEXT,
+    contact_phone TEXT,
+    created_by_user_id INTEGER,
+    district TEXT,
+    taluk TEXT,
+    latitude REAL,
+    longitude REAL,
+    destination_latitude REAL,
+    destination_longitude REAL,
+    hospital_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    assigned_admin_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    assigned_admin_id INTEGER NULL,
+    units_fulfilled INTEGER DEFAULT 0,
+    fulfilled_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS appointments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    donor_name TEXT NOT NULL,
+    blood_group TEXT NOT NULL,
+    appointment_date TEXT NOT NULL,
+    time_slot TEXT NOT NULL,
+    status TEXT DEFAULT 'SCHEDULED',
+    donor_id TEXT,
+    donor_email TEXT,
+    center_name TEXT DEFAULT 'Central Blood Bank Hub #1',
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS donations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    donation_code TEXT UNIQUE,
+    donor_email TEXT NOT NULL,
+    donor_name TEXT NOT NULL,
+    blood_group TEXT NOT NULL,
+    units INTEGER DEFAULT 1,
+    donation_date TEXT NOT NULL,
+    center_name TEXT NOT NULL,
+    status TEXT DEFAULT 'Verified'
+);
+
+CREATE TABLE IF NOT EXISTS inventory_additions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    inventory_id INTEGER,
+    blood_group TEXT NOT NULL,
+    component_type TEXT NOT NULL,
+    quantity INTEGER NOT NULL CHECK(quantity > 0),
+    created_by_user_id INTEGER,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS emergency_alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    request_id INTEGER,
+    requested_by_user_id INTEGER NOT NULL,
+    donor_id TEXT NOT NULL,
+    blood_group TEXT NOT NULL,
+    hospital_name TEXT NOT NULL,
+    urgency_level TEXT NOT NULL,
+    patient_reference TEXT,
+    delivery_status TEXT NOT NULL,
+    email_configured INTEGER NOT NULL DEFAULT 0,
+    delivered INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS emergency_request_responses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL,
+    donor_id TEXT NOT NULL,
+    response TEXT NOT NULL CHECK(response IN ('ACCEPTED', 'REJECTED')),
+    created_at TEXT NOT NULL,
+    UNIQUE(request_id, donor_id),
+    FOREIGN KEY(request_id) REFERENCES blood_requests(id)
+);
+
+CREATE TABLE IF NOT EXISTS notification_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_key TEXT NOT NULL UNIQUE,
+    event_type TEXT NOT NULL,
+    request_id INTEGER,
+    donor_id TEXT,
+    recipient_user_id INTEGER,
+    recipient_email TEXT,
+    status TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK(status IN ('PENDING','PROCESSING','RETRY','SUBMITTED','DELIVERED','BOUNCED','FAILED','NEEDS_REVIEW')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    next_retry_at TEXT,
+    claimed_by TEXT,
+    claimed_at TEXT,
+    claim_expires_at TEXT,
+    provider_message_id TEXT,
+    last_error_code TEXT,
+    last_provider_event_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    submitted_at TEXT,
+    delivered_at TEXT,
+    FOREIGN KEY(request_id) REFERENCES blood_requests(id) ON DELETE SET NULL,
+    FOREIGN KEY(recipient_user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS notification_provider_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_key TEXT NOT NULL UNIQUE,
+    provider_message_id TEXT,
+    event_type TEXT NOT NULL,
+    event_at TEXT,
+    received_at TEXT NOT NULL,
+    matched_outbox_id INTEGER,
+    FOREIGN KEY(matched_outbox_id) REFERENCES notification_outbox(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS hospital_profiles (
+    hospital_user_id INTEGER PRIMARY KEY,
+    hospital_name TEXT NOT NULL,
+    address TEXT NOT NULL,
+    district TEXT,
+    taluk TEXT,
+    latitude REAL,
+    longitude REAL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    contact_email TEXT,
+    contact_phone TEXT,
+    must_change_password INTEGER DEFAULT 0,
+    initial_password_changed_at TEXT,
+    category TEXT DEFAULT 'General Hospital',
+    has_blood_bank INTEGER DEFAULT 0,
+    verification_status TEXT DEFAULT 'PROVISIONAL',
+    blood_bank_status TEXT DEFAULT 'UNKNOWN',
+    is_centroid_coordinates INTEGER DEFAULT 0,
+    FOREIGN KEY(hospital_user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS hospital_blood_inventory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    hospital_user_id INTEGER NOT NULL,
+    blood_group TEXT NOT NULL,
+    component_type TEXT NOT NULL DEFAULT 'Whole Blood',
+    units_available INTEGER NOT NULL DEFAULT 0 CHECK(units_available >= 0),
+    expiry_date TEXT,
+    updated_at TEXT NOT NULL,
+    UNIQUE(hospital_user_id, blood_group),
+    FOREIGN KEY(hospital_user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS donation_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    donor_id INTEGER REFERENCES donors(id) ON DELETE SET NULL,
+    donor_code TEXT,
+    donor_name TEXT NOT NULL,
+    donor_email TEXT NOT NULL,
+    blood_group TEXT NOT NULL,
+    units INTEGER NOT NULL DEFAULT 1 CHECK(units > 0),
+    donation_date TEXT NOT NULL,
+    donation_type TEXT NOT NULL DEFAULT 'Whole Blood'
+        CHECK(donation_type IN ('Whole Blood', 'Platelets', 'Plasma', 'Red Blood Cells')),
+    hospital_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    hospital_name TEXT NOT NULL,
+    appointment_id INTEGER REFERENCES appointments(id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'CONFIRMED'
+        CHECK(status IN ('PENDING', 'APPROVED', 'REJECTED', 'CONFIRMED')),
+    approved_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    approval_date TEXT,
+    notes TEXT,
+    certificate_code TEXT UNIQUE NOT NULL,
+    is_synthetic INTEGER NOT NULL DEFAULT 0 CHECK(is_synthetic IN (0, 1)),
+    synthetic_batch_tag TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    requisition_id INTEGER REFERENCES blood_requests(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_donors_blood_group ON donors(blood_group);
+CREATE INDEX IF NOT EXISTS idx_donors_district_taluk ON donors(district, taluk);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(LOWER(email));
+CREATE INDEX IF NOT EXISTS idx_donation_history_donor_id ON donation_history(donor_id);
+CREATE INDEX IF NOT EXISTS idx_donation_history_donor_email ON donation_history(LOWER(donor_email));
+CREATE INDEX IF NOT EXISTS idx_donation_history_hospital ON donation_history(hospital_user_id);
+CREATE INDEX IF NOT EXISTS idx_donation_history_status ON donation_history(status);
+CREATE INDEX IF NOT EXISTS idx_donation_history_date ON donation_history(donation_date DESC);
+CREATE INDEX IF NOT EXISTS idx_donation_history_synthetic ON donation_history(is_synthetic);
+CREATE INDEX IF NOT EXISTS idx_donation_history_cert ON donation_history(UPPER(certificate_code));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_active_appointment_donor_email ON appointments (LOWER(TRIM(donor_email))) WHERE UPPER(TRIM(status)) IN ('SCHEDULED', 'PENDING', 'CONFIRMED', 'APPROVED');
+"""
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Row and Cursor Abstractions
@@ -460,18 +715,8 @@ def init_postgres_schema(conn: PostgresConnectionWrapper) -> None:
 
 
 def _migrate_sqlite(conn: sqlite3.Connection) -> None:
-    """Ensures tables and columns exist in SQLite database."""
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS emergency_request_responses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            request_id INTEGER NOT NULL,
-            donor_id TEXT NOT NULL,
-            response TEXT NOT NULL CHECK(response IN ('ACCEPTED', 'REJECTED')),
-            created_at TEXT NOT NULL,
-            UNIQUE(request_id, donor_id),
-            FOREIGN KEY(request_id) REFERENCES blood_requests(id)
-        )
-    """)
+    """Ensures tables, columns, indexes, and baseline seeds exist in SQLite database."""
+    conn.executescript(SQLITE_SCHEMA_DDL)
     try:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(blood_requests)").fetchall()]
         if cols and "units_fulfilled" not in cols:
@@ -523,11 +768,46 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
                 conn.execute("ALTER TABLE hospital_profiles ADD COLUMN initial_password_changed_at TEXT")
     except Exception:
         pass
+
+    # Baseline seed: Blood inventory
+    try:
+        b_count = conn.execute("SELECT count(*) FROM blood_inventory").fetchone()[0]
+        if b_count == 0:
+            for bg in ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"]:
+                conn.execute(
+                    "INSERT OR IGNORE INTO blood_inventory (blood_group, component_type, units_available, expiry_date, status) VALUES (?, 'Whole Blood', 10, '2027-12-31', 'AVAILABLE')",
+                    (bg,)
+                )
+    except Exception:
+        pass
+
     try:
         ensure_admin_account(conn)
     except Exception:
         pass
+
+    # Baseline seed: Hospitals
+    try:
+        h_count = conn.execute("SELECT count(*) FROM hospital_profiles").fetchone()[0]
+        if h_count == 0:
+            from provision_hospitals import provision_all_hospitals
+            provision_all_hospitals(conn=conn)
+    except Exception:
+        pass
+
     conn.commit()
+
+
+def ensure_sqlite_db_ready(db_path: str | None = None) -> None:
+    """Ensures the SQLite database file exists and has all 14 tables with baseline data."""
+    path = db_path or (os.getenv("BLOODBANK_DB_FILE") or DATABASE_PATH)
+    dir_name = os.path.dirname(os.path.abspath(path))
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
+    conn = sqlite3.connect(path, check_same_thread=False, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    _migrate_sqlite(conn)
+    conn.close()
 
 
 DESIGNATED_ADMIN_EMAIL = "admin@haemopulse.in"
@@ -681,3 +961,10 @@ def get_db() -> Iterator[Any]:
             conn.close()
         except Exception:
             pass
+
+
+if not is_postgres():
+    try:
+        ensure_sqlite_db_ready()
+    except Exception:
+        pass

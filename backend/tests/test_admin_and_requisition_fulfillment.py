@@ -45,10 +45,16 @@ class AdminAndRequisitionFulfillmentTestCase(unittest.TestCase):
         cls.temp_dir = tempfile.mkdtemp()
         cls.test_db = os.path.join(cls.temp_dir, "test_bloodbank.db")
         original_db = os.path.join(BACKEND_DIR, "bloodbank.db")
+        if not os.path.exists(original_db):
+            database.ensure_sqlite_db_ready(original_db)
         shutil.copyfile(original_db, cls.test_db)
 
         cls.orig_env_db = os.environ.get("BLOODBANK_DB_FILE")
+        cls.orig_db_path = database.DATABASE_PATH
+        cls.orig_server_db_path = server.DATABASE_PATH
         os.environ["BLOODBANK_DB_FILE"] = cls.test_db
+        database.DATABASE_PATH = cls.test_db
+        server.DATABASE_PATH = cls.test_db
 
         # Initialize schema migrations
         conn = database.get_db_connection()
@@ -56,7 +62,9 @@ class AdminAndRequisitionFulfillmentTestCase(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        if cls.orig_env_db is not None:
+        database.DATABASE_PATH = getattr(cls, "orig_db_path", database.DATABASE_PATH)
+        server.DATABASE_PATH = getattr(cls, "orig_server_db_path", server.DATABASE_PATH)
+        if getattr(cls, "orig_env_db", None) is not None:
             os.environ["BLOODBANK_DB_FILE"] = cls.orig_env_db
         else:
             os.environ.pop("BLOODBANK_DB_FILE", None)
@@ -66,6 +74,9 @@ class AdminAndRequisitionFulfillmentTestCase(unittest.TestCase):
             pass
 
     def setUp(self):
+        os.environ["BLOODBANK_DB_FILE"] = self.test_db
+        database.DATABASE_PATH = self.test_db
+        server.DATABASE_PATH = self.test_db
         self.conn = database.get_db_connection()
 
     def tearDown(self):
