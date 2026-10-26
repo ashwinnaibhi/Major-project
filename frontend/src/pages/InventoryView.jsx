@@ -88,6 +88,24 @@ const InventoryView = ({ currentUser }) => {
     }
   };
 
+  if (!token || !isAuthorized) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[50vh] p-6">
+        <div className="w-full max-w-md p-6 rounded-2xl glass-panel border border-slate-800 text-center space-y-4 bg-slate-950/80 shadow-2xl">
+          <div className="w-12 h-12 rounded-2xl bg-amber-950/80 border border-amber-800 flex items-center justify-center text-amber-400 mx-auto">
+            <ShieldAlert className="w-6 h-6" />
+          </div>
+          <div>
+            <h3 className="text-base font-bold text-white">Access Restricted</h3>
+            <p className="text-xs text-slate-400 mt-1">
+              Detailed blood inventory stock management is restricted to authorized Hospital and Administrator accounts.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="p-6 rounded-2xl glass-panel border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -110,20 +128,6 @@ const InventoryView = ({ currentUser }) => {
           <span>Refresh Stock</span>
         </button>
       </div>
-
-      {!token && (
-        <div role="alert" className="p-4 rounded-xl border border-amber-800 bg-amber-950/40 text-xs text-amber-200 flex items-center space-x-2">
-          <ShieldAlert className="w-4 h-4 text-amber-400 flex-shrink-0" />
-          <span>Sign in with an authorized hospital or administrator account to view and update blood stock inventory.</span>
-        </div>
-      )}
-
-      {token && !isAuthorized && (
-        <div role="alert" className="p-4 rounded-xl border border-rose-800 bg-rose-950/40 text-xs text-rose-200 flex items-center space-x-2">
-          <ShieldAlert className="w-4 h-4 text-rose-400 flex-shrink-0" />
-          <span>Access restricted: Detailed blood inventory management is restricted to authorized Hospital and Administrator accounts.</span>
-        </div>
-      )}
 
       {msg.text && (
         <div className={`p-4 rounded-xl text-xs font-bold flex items-center space-x-2 border ${

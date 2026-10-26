@@ -7,10 +7,12 @@ import os
 import json
 import sqlite3
 import datetime
+import calendar
 import math
 import hashlib
 import hmac
 import secrets
+import threading
 from typing import Optional, List, Any
 import logging
 logger = logging.getLogger('haemopulse')
@@ -1037,8 +1039,82 @@ def get_availability_score(user: dict = Depends(get_current_user),
 @app.get("/api/v1/donors")
 def list_donors(user: dict = Depends(get_current_user),
                 conn: sqlite3.Connection = Depends(get_db)):
+    role = user.get("role", "")
+    if role not in ("ROLE_ADMIN", "ROLE_HOSPITAL"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden: Administrator or Hospital access required to view donor records."
+        )
     rows = conn.execute("SELECT * FROM donors ORDER BY name ASC").fetchall()
-    return [dict(r) for r in rows]
+    results = []
+    for r in rows:
+        d = dict(r)
+        if role == "ROLE_HOSPITAL":
+            # Sanitize donor contact details for hospital viewing
+            d.pop("email", None)
+            d.pop("phone", None)
+        d.pop("latitude", None)
+        d.pop("longitude", None)
+        results.append(d)
+    return results
+
+
+@app.delete("/api/v1/donors/{donor_id}")
+def delete_donor(donor_id: str,
+                 user: dict = Depends(get_current_user),
+                 conn: sqlite3.Connection = Depends(get_db)):
+    if user.get("role") != "ROLE_ADMIN":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden: Administrator access required to delete donor records."
+        )
+    donor = conn.execute(
+        "SELECT id, donor_id, user_id FROM donors WHERE id = ? OR donor_id = ?",
+        (donor_id, donor_id)
+    ).fetchone()
+    if not donor:
+        raise HTTPException(status_code=404, detail="Donor record not found.")
+    conn.execute("DELETE FROM donors WHERE id = ?", (donor["id"],))
+    conn.commit()
+    return {"status": "success", "message": f"Donor record {donor_id} deleted successfully."}
+
+
+@app.delete("/api/v1/requests/{request_id}")
+def delete_request(request_id: int,
+                   user: dict = Depends(get_current_user),
+                   conn: sqlite3.Connection = Depends(get_db)):
+    if user.get("role") != "ROLE_ADMIN":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden: Administrator access required to delete requests."
+        )
+    req = conn.execute("SELECT id FROM blood_requests WHERE id = ?", (request_id,)).fetchone()
+    if not req:
+        raise HTTPException(status_code=404, detail="Blood request not found.")
+    conn.execute("DELETE FROM emergency_request_responses WHERE request_id = ?", (request_id,))
+    conn.execute("DELETE FROM blood_requests WHERE id = ?", (request_id,))
+    conn.commit()
+    return {"status": "success", "message": f"Blood request #{request_id} deleted successfully."}
+
+
+@app.get("/api/v1/admin/verify")
+def verify_admin_session(user: dict = Depends(get_current_user)):
+    if user.get("role") != "ROLE_ADMIN":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden: Administrator access required."
+        )
+    return {
+        "status": "ok",
+        "authenticated": True,
+        "role": "ROLE_ADMIN",
+        "user": {
+            "id": user["id"],
+            "name": user["name"],
+            "email": user["email"],
+            "role": "ROLE_ADMIN"
+        }
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1746,10 +1822,225 @@ def add_stock(payload: GlobalInventoryPayload,
 # APPOINTMENTS
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DONOR RECOVERY PERIOD ELIGIBILITY HELPERS (3-Calendar-Month Rule)
+# ─────────────────────────────────────────────────────────────────────────────
+
+RECOVERY_PERIOD_REJECTION_MESSAGE = (
+    "You must wait for the recovery period to complete before booking another blood donation appointment."
+)
+
+ACTIVE_APPOINTMENT_MESSAGE = (
+    "You already have an active blood donation appointment. "
+    "Please complete or cancel your existing appointment before booking another."
+)
+
+ACTIVE_APPOINTMENT_STATUSES = ("SCHEDULED", "PENDING", "CONFIRMED", "APPROVED")
+
+appointment_booking_lock = threading.Lock()
+
+
+def parse_date_safe(val: Any) -> Optional[datetime.date]:
+    """Safely parses any date string, datetime object, or date object to a datetime.date."""
+    if not val:
+        return None
+    if isinstance(val, datetime.date) and not isinstance(val, datetime.datetime):
+        return val
+    if isinstance(val, datetime.datetime):
+        return val.date()
+    s = str(val).strip()
+    if not s:
+        return None
+    try:
+        return datetime.date.fromisoformat(s[:10])
+    except Exception:
+        pass
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d"):
+        try:
+            return datetime.datetime.strptime(s[:10], fmt).date()
+        except Exception:
+            continue
+    return None
+
+
+def add_three_calendar_months(start_date: datetime.date) -> datetime.date:
+    """Adds exactly three calendar months to start_date, clamping to month-end when needed.
+    Example:
+        Jan 31 -> Apr 30
+        Nov 30 -> Feb 28 (or Feb 29 on leap year)
+        Mar 31 -> Jun 30
+    Does NOT calculate as a fixed 90 days.
+    """
+    year = start_date.year
+    month = start_date.month + 3
+    if month > 12:
+        year += (month - 1) // 12
+        month = ((month - 1) % 12) + 1
+    max_days_in_target = calendar.monthrange(year, month)[1]
+    day = min(start_date.day, max_days_in_target)
+    return datetime.date(year, month, day)
+
+
+def get_donor_latest_completed_donation(conn: Any, user: dict, donor: dict | None = None) -> Optional[datetime.date]:
+    """Queries authoritative completed blood donation records for the authenticated donor.
+    Does NOT count scheduled, cancelled, or pending appointments as completed blood donations.
+    """
+    user_email = user["email"].strip().lower()
+
+    if donor is None:
+        row = conn.execute(
+            "SELECT * FROM donors WHERE user_id = ? OR LOWER(TRIM(email)) = LOWER(TRIM(?))",
+            (user["id"], user_email)
+        ).fetchone()
+        if row:
+            donor = dict(row)
+
+    donor_id_pk = donor.get("id") if donor else None
+    donor_code = donor.get("donor_id") if donor else None
+
+    completed_dates: list[datetime.date] = []
+
+    # 1. Query donation_history (hospital & facility clinical collections)
+    history_rows = conn.execute("""
+        SELECT donation_date, status FROM donation_history
+        WHERE ((donor_id IS NOT NULL AND (donor_id = ? OR donor_id = ?))
+               OR (donor_code IS NOT NULL AND donor_code = ?)
+               OR LOWER(TRIM(donor_email)) = LOWER(TRIM(?)))
+          AND UPPER(status) IN ('CONFIRMED', 'APPROVED', 'VERIFIED', 'COMPLETED', 'SUCCESS')
+    """, (donor_id_pk, user["id"], donor_code, user_email)).fetchall()
+    for row in history_rows:
+        d = parse_date_safe(row["donation_date"])
+        if d:
+            completed_dates.append(d)
+
+    # 2. Query donations (verified donations table)
+    donations_rows = conn.execute("""
+        SELECT donation_date, status FROM donations
+        WHERE LOWER(TRIM(donor_email)) = LOWER(TRIM(?))
+          AND UPPER(status) IN ('VERIFIED', 'CONFIRMED', 'COMPLETED', 'APPROVED', 'SUCCESS')
+    """, (user_email,)).fetchall()
+    for row in donations_rows:
+        d = parse_date_safe(row["donation_date"])
+        if d:
+            completed_dates.append(d)
+
+    # 3. Check donor profile recorded last_donation_date if present
+    if donor and donor.get("last_donation_date"):
+        d = parse_date_safe(donor["last_donation_date"])
+        if d:
+            completed_dates.append(d)
+
+    if completed_dates:
+        return max(completed_dates)
+    return None
+
+
+def get_donor_appointment_eligibility(conn: Any, user: dict, donor: dict | None = None) -> dict:
+    """Evaluates whether the authenticated donor is eligible to book an appointment:
+    1. Checks if the donor already has an active appointment (SCHEDULED, PENDING, CONFIRMED, APPROVED).
+    2. Checks if the donor is within the 3-calendar-month recovery period from their last completed donation.
+    """
+    user_email = user["email"].strip().lower()
+
+    if donor is None:
+        row = conn.execute(
+            "SELECT * FROM donors WHERE user_id = ? OR LOWER(TRIM(email)) = LOWER(TRIM(?))",
+            (user["id"], user_email)
+        ).fetchone()
+        if row:
+            donor = dict(row)
+
+    donor_id_code = donor.get("donor_id", "") if donor else ""
+
+    # 1. Check for existing active appointment
+    active_row = conn.execute("""
+        SELECT id, donor_id, donor_name, donor_email, blood_group, appointment_date, time_slot, center_name, status, created_at
+        FROM appointments
+        WHERE (LOWER(TRIM(donor_email)) = LOWER(TRIM(?))
+               OR (donor_id IS NOT NULL AND donor_id != '' AND donor_id = ?))
+          AND UPPER(TRIM(status)) IN ('SCHEDULED', 'PENDING', 'CONFIRMED', 'APPROVED')
+        ORDER BY appointment_date ASC, id ASC
+        LIMIT 1
+    """, (user_email, donor_id_code)).fetchone()
+
+    active_appointment = dict(active_row) if active_row else None
+    has_active_appointment = active_appointment is not None
+
+    # 2. Check 3-calendar-month recovery period from authoritative completed donations
+    latest_donation_date = get_donor_latest_completed_donation(conn, user, donor)
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+
+    earliest_eligible = None
+    recovery_period_active = False
+    if latest_donation_date is not None:
+        earliest_eligible = add_three_calendar_months(latest_donation_date)
+        recovery_period_active = today < earliest_eligible
+
+    # Determine overall eligibility
+    if has_active_appointment:
+        return {
+            "eligible": False,
+            "has_active_appointment": True,
+            "active_appointment": active_appointment,
+            "recovery_period_active": recovery_period_active,
+            "has_donated": latest_donation_date is not None,
+            "last_donation_date": latest_donation_date.isoformat() if latest_donation_date else None,
+            "earliest_eligible_date": earliest_eligible.isoformat() if earliest_eligible else None,
+            "error_code": "ACTIVE_APPOINTMENT_EXISTS",
+            "message": ACTIVE_APPOINTMENT_MESSAGE
+        }
+
+    if recovery_period_active:
+        return {
+            "eligible": False,
+            "has_active_appointment": False,
+            "active_appointment": None,
+            "recovery_period_active": True,
+            "has_donated": True,
+            "last_donation_date": latest_donation_date.isoformat(),
+            "earliest_eligible_date": earliest_eligible.isoformat(),
+            "error_code": "RECOVERY_PERIOD_ACTIVE",
+            "message": RECOVERY_PERIOD_REJECTION_MESSAGE
+        }
+
+    return {
+        "eligible": True,
+        "has_active_appointment": False,
+        "active_appointment": None,
+        "recovery_period_active": False,
+        "has_donated": latest_donation_date is not None,
+        "last_donation_date": latest_donation_date.isoformat() if latest_donation_date else None,
+        "earliest_eligible_date": earliest_eligible.isoformat() if earliest_eligible else None,
+        "error_code": None,
+        "message": "Eligible to book a blood donation appointment."
+    }
+
+@app.get("/api/v1/appointments/eligibility")
+def get_appointment_eligibility_endpoint(user: dict = Depends(get_current_user),
+                                         conn: Any = Depends(get_db)):
+    if user["role"] != "ROLE_DONOR":
+        raise HTTPException(status_code=403, detail="Donor access only")
+
+    donor_row = conn.execute(
+        "SELECT * FROM donors WHERE user_id = ? OR LOWER(TRIM(email)) = LOWER(TRIM(?))",
+        (user["id"], user["email"])
+    ).fetchone()
+    donor = dict(donor_row) if donor_row else None
+
+    try:
+        return get_donor_appointment_eligibility(conn, user, donor)
+    except Exception as exc:
+        logger.error("Failed to query donor appointment eligibility: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to verify donation history. Please retry in a few moments."
+        )
+
+
 @app.post("/api/v1/appointments")
 def book_appointment(payload: AppointmentPayload,
                      user: dict = Depends(get_current_user),
-                     conn: sqlite3.Connection = Depends(get_db)):
+                     conn: Any = Depends(get_db)):
     if user["role"] != "ROLE_DONOR":
         raise HTTPException(status_code=403, detail="Donor access only")
 
@@ -1761,25 +2052,96 @@ def book_appointment(payload: AppointmentPayload,
         )
 
     donor = conn.execute(
-        "SELECT * FROM donors WHERE user_id = ? OR LOWER(email) = LOWER(?)",
+        "SELECT * FROM donors WHERE user_id = ? OR LOWER(TRIM(email)) = LOWER(TRIM(?))",
         (user["id"], user["email"])
     ).fetchone()
     if not donor:
         raise HTTPException(status_code=404, detail="Donor profile not found")
 
     donor = dict(donor)
-    now = datetime.datetime.utcnow().isoformat(sep=" ", timespec="seconds")
 
-    conn.execute(
-        """INSERT INTO appointments
-             (donor_id, donor_name, donor_email, blood_group, appointment_date, time_slot, center_name, status, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?)""",
-        (donor.get("donor_id", ""), donor.get("name", user["name"]),
-         user["email"], donor.get("blood_group", ""),
-         payload.appointment_date, payload.time_slot,
-         payload.center_name or "Central Blood Bank Hub #1", now),
-    )
-    conn.commit()
+    # Thread-safe lock to prevent concurrent double-booking race condition
+    with appointment_booking_lock:
+        # Check active appointment
+        active_row = conn.execute("""
+            SELECT id, donor_id, donor_name, donor_email, blood_group, appointment_date, time_slot, center_name, status, created_at
+            FROM appointments
+            WHERE (LOWER(TRIM(donor_email)) = LOWER(TRIM(?))
+                   OR (donor_id IS NOT NULL AND donor_id != '' AND donor_id = ?))
+              AND UPPER(TRIM(status)) IN ('SCHEDULED', 'PENDING', 'CONFIRMED', 'APPROVED')
+            ORDER BY appointment_date ASC, id ASC
+            LIMIT 1
+        """, (user["email"], donor.get("donor_id", ""))).fetchone()
+
+        if active_row:
+            active_dict = dict(active_row)
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error_code": "ACTIVE_APPOINTMENT_EXISTS",
+                    "message": ACTIVE_APPOINTMENT_MESSAGE,
+                    "active_appointment": active_dict
+                }
+            )
+
+        # 3-Month Recovery Period & Overall Validation
+        try:
+            eligibility = get_donor_appointment_eligibility(conn, user, donor)
+        except Exception as exc:
+            logger.error("Failed to query donor history for appointment eligibility: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail="Unable to verify donation history. Please retry in a few moments."
+            )
+
+        if not eligibility["eligible"]:
+            if eligibility.get("has_active_appointment"):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error_code": "ACTIVE_APPOINTMENT_EXISTS",
+                        "message": eligibility["message"],
+                        "active_appointment": eligibility.get("active_appointment")
+                    }
+                )
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error_code": "RECOVERY_PERIOD_ACTIVE",
+                    "message": RECOVERY_PERIOD_REJECTION_MESSAGE,
+                    "last_donation_date": eligibility["last_donation_date"],
+                    "earliest_eligible_date": eligibility["earliest_eligible_date"],
+                }
+            )
+
+        # Validate that selected appointment date is not earlier than earliest_eligible_date
+        if eligibility.get("earliest_eligible_date") and payload.appointment_date:
+            app_date = parse_date_safe(payload.appointment_date)
+            earliest_date = parse_date_safe(eligibility["earliest_eligible_date"])
+            if app_date and earliest_date and app_date < earliest_date:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error_code": "RECOVERY_PERIOD_ACTIVE",
+                        "message": RECOVERY_PERIOD_REJECTION_MESSAGE,
+                        "last_donation_date": eligibility["last_donation_date"],
+                        "earliest_eligible_date": eligibility["earliest_eligible_date"],
+                    }
+                )
+
+        now = datetime.datetime.utcnow().isoformat(sep=" ", timespec="seconds")
+
+        conn.execute(
+            """INSERT INTO appointments
+                 (donor_id, donor_name, donor_email, blood_group, appointment_date, time_slot, center_name, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?)""",
+            (donor.get("donor_id", ""), donor.get("name", user["name"]),
+             user["email"], donor.get("blood_group", ""),
+             payload.appointment_date, payload.time_slot,
+             payload.center_name or "Central Blood Bank Hub #1", now),
+        )
+        conn.commit()
+
     return {"message": "Appointment booked successfully.", "status": "SCHEDULED"}
 
 
@@ -1809,20 +2171,40 @@ def list_appointments(user: dict = Depends(get_current_user),
 
 @app.put("/api/v1/appointments/{appointment_id}/status")
 def update_appointment_status(appointment_id: int,
-                              status: str = Query(..., pattern="^(SCHEDULED|COMPLETED|CANCELLED)$"),
+                              status: str = Query(..., pattern="^(SCHEDULED|PENDING|CONFIRMED|APPROVED|COMPLETED|CANCELLED)$"),
                               user: dict = Depends(get_current_user),
                               conn: Any = Depends(get_db)):
-    if user["role"] not in ("ROLE_HOSPITAL", "ROLE_ADMIN", "STAFF"):
-        raise HTTPException(status_code=403, detail="Hospital or Administrator access required")
-
-    appt = conn.execute("SELECT id FROM appointments WHERE id = ?", (appointment_id,)).fetchone()
+    appt = conn.execute("SELECT * FROM appointments WHERE id = ?", (appointment_id,)).fetchone()
     if not appt:
         raise HTTPException(status_code=404, detail="Appointment not found")
+
+    appt_dict = dict(appt)
+
+    # Donors can cancel their own appointments
+    if user["role"] == "ROLE_DONOR":
+        if status != "CANCELLED":
+            raise HTTPException(status_code=403, detail="Donors can only cancel their appointments.")
+        donor_email = str(appt_dict.get("donor_email") or "").strip().lower()
+        if donor_email != user["email"].strip().lower():
+            raise HTTPException(status_code=403, detail="You can only cancel your own appointments.")
+        conn.execute("UPDATE appointments SET status = 'CANCELLED' WHERE id = ?", (appointment_id,))
+        conn.commit()
+        return {"success": True, "appointment_id": appointment_id, "status": "CANCELLED"}
+
+    if user["role"] not in ("ROLE_HOSPITAL", "ROLE_ADMIN", "STAFF"):
+        raise HTTPException(status_code=403, detail="Hospital or Administrator access required")
 
     conn.execute("UPDATE appointments SET status = ? WHERE id = ?", (status, appointment_id))
     conn.commit()
 
     return {"success": True, "appointment_id": appointment_id, "status": status}
+
+
+@app.put("/api/v1/appointments/{appointment_id}/cancel")
+def cancel_appointment_endpoint(appointment_id: int,
+                                user: dict = Depends(get_current_user),
+                                conn: Any = Depends(get_db)):
+    return update_appointment_status(appointment_id=appointment_id, status="CANCELLED", user=user, conn=conn)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1838,6 +2220,7 @@ class RecordDonationPayload(BaseModel):
     donation_date: str
     donation_type: str = "Whole Blood"
     appointment_id: Optional[int] = None
+    requisition_id: Optional[int] = None
     notes: Optional[str] = None
     hospital_name: Optional[str] = None
 
@@ -1872,7 +2255,7 @@ def get_my_donation_history(user: dict = Depends(get_current_user),
     rows = conn.execute("""
         SELECT id, donor_id, donor_code, donor_name, donor_email, blood_group, units,
                donation_date, donation_type, hospital_user_id, hospital_name,
-               appointment_id, status, approval_date, notes, certificate_code,
+               appointment_id, requisition_id, status, approval_date, notes, certificate_code,
                is_synthetic, created_at
         FROM donation_history
         WHERE (donor_id IS NOT NULL AND donor_id = ?) OR LOWER(donor_email) = LOWER(?)
@@ -1902,19 +2285,32 @@ def get_my_donation_history(user: dict = Depends(get_current_user),
         except Exception:
             pass
 
+    # 3-calendar-month recovery period calculation
+    earliest_eligible_date = None
+    recovery_period_active = False
+    if last_donation_date:
+        d_date = parse_date_safe(last_donation_date)
+        if d_date:
+            earliest_dt = add_three_calendar_months(d_date)
+            earliest_eligible_date = earliest_dt.isoformat()
+            today = datetime.datetime.now(datetime.timezone.utc).date()
+            recovery_period_active = today < earliest_dt
+
     return {
         "records": records,
         "total_donations": total_donations,
         "last_donation_date": last_donation_date,
         "last_donation_days": last_days,
         "interval_eligible": is_eligible,
-        "is_eligible": is_eligible,
+        "is_eligible": is_eligible and not recovery_period_active,
+        "recovery_period_active": recovery_period_active,
+        "earliest_eligible_date": earliest_eligible_date,
         "days_until_eligible": days_until_eligible,
         "required_gap_days": gap,
         "eligibility_disclaimer": (
             "Minimum donation interval satisfied. Definitive medical eligibility is determined on-site following mandatory hemoglobin and health screening."
-            if is_eligible else
-            f"Minimum {gap}-day clinical recovery interval active ({days_until_eligible} days remaining until next eligible donation attempt)."
+            if (is_eligible and not recovery_period_active) else
+            (f"Blood Donation Recovery Period: You are not eligible to donate blood yet. Next eligible date: {earliest_eligible_date}." if recovery_period_active else f"Minimum {gap}-day clinical recovery interval active ({days_until_eligible} days remaining until next eligible donation attempt).")
         )
     }
 
@@ -1992,6 +2388,52 @@ def record_hospital_donation(payload: RecordDonationPayload,
                 (payload.appointment_id,)
             )
 
+        # Requisition link validation
+        req_row = None
+        new_req_status = None
+        new_fulfilled_units = None
+        req_needed_units = None
+        if payload.requisition_id is not None:
+            req_row = conn.execute("SELECT * FROM blood_requests WHERE id = ?", (payload.requisition_id,)).fetchone()
+            if not req_row:
+                raise HTTPException(status_code=404, detail=f"Requisition #{payload.requisition_id} not found.")
+
+            req = dict(req_row)
+
+            # Prevent cross-hospital fulfillment
+            if user["role"] == "ROLE_HOSPITAL":
+                h_uid = req.get("hospital_user_id")
+                c_uid = req.get("created_by_user_id")
+                if (h_uid and h_uid != user["id"]) and (c_uid and c_uid != user["id"]):
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Access denied: You can only fulfill requisitions belonging to your medical facility."
+                    )
+
+            # Prevent duplicate fulfillment of already-satisfied requests
+            cur_status = str(req.get("status") or "PENDING").upper()
+            if cur_status in ("FULFILLED", "APPROVED", "ALLOCATED"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Requisition #{payload.requisition_id} is already fulfilled (status: {cur_status})."
+                )
+
+            # Prevent cross-blood-group fulfillment
+            req_bg = str(req.get("blood_group") or "").strip().upper()
+            if bg != req_bg:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Blood group mismatch: donation is {bg} but requisition #{payload.requisition_id} requires {req_bg}."
+                )
+
+            req_needed_units = int(req.get("units_needed") or 1)
+            cur_fulfilled = int(req.get("units_fulfilled") or 0)
+            new_fulfilled_units = cur_fulfilled + payload.units
+            if new_fulfilled_units >= req_needed_units:
+                new_req_status = "FULFILLED"
+            else:
+                new_req_status = "PENDING"
+
         # Generate unique certificate code
         cert_code = generate_certificate_code(conn)
         now_iso = datetime.datetime.utcnow().isoformat(sep=" ", timespec="seconds")
@@ -2001,18 +2443,18 @@ def record_hospital_donation(payload: RecordDonationPayload,
             INSERT INTO donation_history (
                 donor_id, donor_code, donor_name, donor_email, blood_group, units,
                 donation_date, donation_type, hospital_user_id, hospital_name,
-                appointment_id, status, approved_by_user_id, approval_date, notes,
+                appointment_id, requisition_id, status, approved_by_user_id, approval_date, notes,
                 certificate_code, is_synthetic, created_at, updated_at
             ) VALUES (
                 ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?,
-                ?, 'CONFIRMED', ?, ?, ?,
+                ?, ?, 'CONFIRMED', ?, ?, ?,
                 ?, 0, ?, ?
             )
         """, (
             donor_id_pk, donor_code, donor_name, payload.donor_email.strip(), bg, payload.units,
             payload.donation_date.strip(), payload.donation_type, hospital_user_id, hospital_name,
-            payload.appointment_id, user["id"], now_iso, payload.notes,
+            payload.appointment_id, payload.requisition_id, user["id"], now_iso, payload.notes,
             cert_code, now_iso, now_iso
         ))
         record_id = cur.lastrowid
@@ -2028,6 +2470,17 @@ def record_hospital_donation(payload: RecordDonationPayload,
                     is_available = 0
                 WHERE id = ?
             """, (cur_total, payload.units, payload.donation_date.strip(), donor_id_pk))
+
+        # Update linked blood requisition atomically
+        if req_row is not None:
+            req_fulfilled_at = now_iso if new_req_status == "FULFILLED" else req.get("fulfilled_at")
+            conn.execute("""
+                UPDATE blood_requests
+                SET units_fulfilled = ?,
+                    status = ?,
+                    fulfilled_at = ?
+                WHERE id = ?
+            """, (new_fulfilled_units, new_req_status, req_fulfilled_at, payload.requisition_id))
 
         # Clinical Safety Rule: Freshly collected whole blood is placed in laboratory quarantine
         # and is NOT prematurely added to distribution inventory (`units_available`) until mandatory
@@ -2047,6 +2500,10 @@ def record_hospital_donation(payload: RecordDonationPayload,
             "donation_date": payload.donation_date.strip(),
             "hospital_name": hospital_name,
             "status": "CONFIRMED",
+            "requisition_id": payload.requisition_id,
+            "requisition_status": new_req_status,
+            "requisition_units_fulfilled": new_fulfilled_units,
+            "requisition_units_needed": req_needed_units,
             "inventory_status": "QUARANTINED_PENDING_LAB_SCREENING",
             "screening_note": "Collected units held in quarantine. Distribution inventory requires infectious disease clearance (HIV, HBV, HCV, Syphilis, Malaria) and component separation."
         }
@@ -2065,7 +2522,7 @@ def get_hospital_donations(user: dict = Depends(get_current_user),
     rows = conn.execute("""
         SELECT id, donor_id, donor_code, donor_name, donor_email, blood_group, units,
                donation_date, donation_type, hospital_user_id, hospital_name,
-               appointment_id, status, approval_date, notes, certificate_code,
+               appointment_id, requisition_id, status, approval_date, notes, certificate_code,
                is_synthetic, created_at
         FROM donation_history
         WHERE hospital_user_id = ?
@@ -2086,7 +2543,7 @@ def get_admin_donations(is_synthetic: Optional[int] = Query(None),
         rows = conn.execute("""
             SELECT id, donor_id, donor_code, donor_name, donor_email, blood_group, units,
                    donation_date, donation_type, hospital_user_id, hospital_name,
-                   appointment_id, status, approval_date, notes, certificate_code,
+                   appointment_id, requisition_id, status, approval_date, notes, certificate_code,
                    is_synthetic, created_at
             FROM donation_history
             WHERE is_synthetic = ?
@@ -2096,7 +2553,7 @@ def get_admin_donations(is_synthetic: Optional[int] = Query(None),
         rows = conn.execute("""
             SELECT id, donor_id, donor_code, donor_name, donor_email, blood_group, units,
                    donation_date, donation_type, hospital_user_id, hospital_name,
-                   appointment_id, status, approval_date, notes, certificate_code,
+                   appointment_id, requisition_id, status, approval_date, notes, certificate_code,
                    is_synthetic, created_at
             FROM donation_history
             ORDER BY donation_date DESC, id DESC

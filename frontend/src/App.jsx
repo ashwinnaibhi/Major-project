@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Navbar from './components/Navbar';
 import Sidebar from './components/Sidebar';
 import AdminDashboard from './pages/AdminDashboard';
@@ -19,9 +19,10 @@ import { getApiBaseUrl } from './api/config';
 const API_BASE = getApiBaseUrl();
 
 function normalizeRole(role) {
-  const value = String(role || 'ADMIN').toUpperCase();
-  if (value.startsWith('ROLE_')) return value.slice(5);
-  return ['ADMIN', 'HOSPITAL', 'DONOR', 'STAFF'].includes(value) ? value : 'ADMIN';
+  if (!role) return 'DONOR';
+  const value = String(role).toUpperCase();
+  const trimmed = value.startsWith('ROLE_') ? value.slice(5) : value;
+  return ['ADMIN', 'HOSPITAL', 'DONOR', 'STAFF'].includes(trimmed) ? trimmed : 'DONOR';
 }
 
 function readPersistedUser() {
@@ -60,17 +61,25 @@ export default function App() {
       return;
     }
     const headers = { Authorization: `Bearer ${user.token}` };
-    try {
-      const response = await fetch(`${API_BASE}/api/v1/donors`, { headers });
-      if (response.ok) {
-        const data = await response.json();
-        if (Array.isArray(data)) setDonorsList(data);
-      } else {
+    const userRole = String(user.role || '').toUpperCase().replace(/^ROLE_/, '');
+
+    // Full donors directory is strictly restricted to administrator sessions
+    if (userRole === 'ADMIN') {
+      try {
+        const response = await fetch(`${API_BASE}/api/v1/donors`, { headers });
+        if (response.ok) {
+          const data = await response.json();
+          if (Array.isArray(data)) setDonorsList(data);
+        } else {
+          setDonorsList([]);
+        }
+      } catch {
         setDonorsList([]);
       }
-    } catch {
+    } else {
       setDonorsList([]);
     }
+
     try {
       const response = await fetch(`${API_BASE}/api/v1/requests`, { headers });
       if (response.ok) {
@@ -136,7 +145,7 @@ export default function App() {
   };
 
   // Handle Login/Register Success
-  const handleAuthSuccess = (authenticatedUser) => {
+  const handleAuthSuccess = useCallback((authenticatedUser) => {
     const rawRole = authenticatedUser?.role || 'DONOR';
     const normalized = normalizeRole(rawRole);
     const sessionUser = {
@@ -152,10 +161,10 @@ export default function App() {
     } else {
       setActiveTab('dashboard');
     }
-  };
+  }, []);
 
   // Handle Logout safely with redirection to role-selection portal
-  const handleLogout = (goToRoleSelect = true) => {
+  const handleLogout = useCallback((goToRoleSelect = true) => {
     localStorage.removeItem('haemopulse_user');
     localStorage.removeItem('token');
     setCurrentUser(null);
@@ -163,7 +172,7 @@ export default function App() {
       setActiveRole('DONOR');
       setActiveTab('role_select');
     }
-  };
+  }, []);
 
   // Persist requisitions before changing the UI. No optimistic/fake request rows.
   const handleRequestCreated = async (newReq) => {
@@ -290,6 +299,7 @@ export default function App() {
               requestsList={requestsList} 
               onRequestCreated={handleRequestCreated}
               currentUser={currentUser}
+              onRefreshRequests={() => refreshRequests(currentUser)}
             />
           );
         }
@@ -309,6 +319,7 @@ export default function App() {
             requestsList={requestsList}
             onDeleteDonor={handleDeleteDonor}
             onAuthSuccess={handleAuthSuccess}
+            onLogout={handleLogout}
           />
         );
 
@@ -332,7 +343,17 @@ export default function App() {
       case 'appointments':
         return <AppointmentsView currentUser={currentUser} activeRole={activeRole} />;
       default:
-        return <AdminDashboard onNavigate={(tab) => setActiveTab(tab)} currentUser={currentUser} donorsList={donorsList} requestsList={requestsList} onDeleteDonor={handleDeleteDonor} />;
+        return (
+          <AdminDashboard
+            onNavigate={(tab) => setActiveTab(tab)}
+            currentUser={currentUser}
+            donorsList={donorsList}
+            requestsList={requestsList}
+            onDeleteDonor={handleDeleteDonor}
+            onAuthSuccess={handleAuthSuccess}
+            onLogout={handleLogout}
+          />
+        );
     }
   };
 
@@ -356,6 +377,7 @@ export default function App() {
           activeTab={activeTab} 
           setActiveTab={setActiveTab} 
           activeRole={activeRole}
+          currentUser={currentUser}
         />
         
         <main className="flex-1 p-6 overflow-y-auto max-w-7xl mx-auto w-full">

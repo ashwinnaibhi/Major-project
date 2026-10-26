@@ -5,12 +5,13 @@ import StatCard from '../components/StatCard';
 import MLPredictionBadge from '../components/MLPredictionBadge';
 import { Plus, FileText, CheckCircle2, Clock, MapPin, AlertCircle, Building2, X, Award } from 'lucide-react';
 
-export default function HospitalDashboard({ donorsList = [], requestsList = [], onRequestCreated, currentUser }) {
+export default function HospitalDashboard({ donorsList = [], requestsList = [], onRequestCreated, currentUser, onRefreshRequests }) {
   const [showReqModal, setShowReqModal] = useState(false);
   const [showDonationModal, setShowDonationModal] = useState(false);
   const [hospitalDonations, setHospitalDonations] = useState([]);
   const [isSubmittingDonation, setIsSubmittingDonation] = useState(false);
   const [donationFormError, setDonationFormError] = useState('');
+  const [requisitionTab, setRequisitionTab] = useState('pending');
   const [donationForm, setDonationForm] = useState({
     donor_email: '',
     donor_name: '',
@@ -19,6 +20,7 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
     donation_date: new Date().toISOString().split('T')[0],
     donation_type: 'Whole Blood',
     appointment_id: '',
+    requisition_id: '',
     notes: ''
   });
   const [newRequest, setNewRequest] = useState({
@@ -74,9 +76,28 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [showReqModal, closeRequestModal]);
 
-  const pendingCount = requestsList.filter(r => (r.status || 'PENDING') === 'PENDING').length;
-  const fulfilledCount = requestsList.filter(r => r.status === 'APPROVED' || r.status === 'ALLOCATED').length;
-  const emergencyCount = requestsList.filter(r => (r.urgency || r.urgency_level) === 'EMERGENCY').length;
+  const pendingRequests = requestsList.filter(r => (r.status || 'PENDING') === 'PENDING');
+  const fulfilledRequests = requestsList.filter(r => r.status === 'FULFILLED' || r.status === 'APPROVED' || r.status === 'ALLOCATED');
+  const pendingCount = pendingRequests.length;
+  const fulfilledCount = fulfilledRequests.length;
+  const emergencyCount = pendingRequests.filter(r => (r.urgency || r.urgency_level) === 'EMERGENCY').length;
+
+  const openFulfillModal = (req) => {
+    const remainingUnits = Math.max(1, (Number(req.units_needed || req.units) - Number(req.units_fulfilled || 0)));
+    setDonationForm({
+      donor_email: '',
+      donor_name: '',
+      blood_group: req.blood_group || req.blood || 'O+',
+      units: remainingUnits,
+      donation_date: new Date().toISOString().split('T')[0],
+      donation_type: 'Whole Blood',
+      appointment_id: '',
+      requisition_id: String(req.id || ''),
+      notes: `Fulfillment donation for Requisition #${req.id} (${req.patient_name || req.patient || 'Patient'})`
+    });
+    setDonationFormError('');
+    setShowDonationModal(true);
+  };
 
   const isHospitalAuthorized = Boolean(
     currentUser?.token &&
@@ -132,12 +153,16 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
           donation_date: donationForm.donation_date,
           donation_type: donationForm.donation_type,
           appointment_id: donationForm.appointment_id ? Number(donationForm.appointment_id) : undefined,
+          requisition_id: donationForm.requisition_id ? Number(donationForm.requisition_id) : undefined,
           notes: donationForm.notes.trim() || undefined
         })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Failed to record donation.');
-      setSuccessNotice(`Donation confirmed! Certificate #${data.certificate_code} issued for ${data.donor_name} (${data.units} unit(s) of ${data.blood_group}).`);
+      const noticeSuffix = data.requisition_id
+        ? ` Requisition #${data.requisition_id} updated (${data.requisition_status}).`
+        : '';
+      setSuccessNotice(`Donation confirmed! Certificate #${data.certificate_code} issued for ${data.donor_name} (${data.units} unit(s) of ${data.blood_group}).${noticeSuffix}`);
       setShowDonationModal(false);
       setDonationForm({
         donor_email: '',
@@ -147,9 +172,13 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
         donation_date: new Date().toISOString().split('T')[0],
         donation_type: 'Whole Blood',
         appointment_id: '',
+        requisition_id: '',
         notes: ''
       });
       await loadHospitalDonations();
+      if (typeof onRefreshRequests === 'function') {
+        await onRefreshRequests();
+      }
     } catch (err) {
       setDonationFormError(err.message || 'Could not record donation.');
     } finally {
@@ -306,75 +335,163 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
           </div>
         </div>
 
-        {/* Requisitions Table */}
-        <div className="overflow-x-auto">
-          {requestsList.length === 0 ? (
-            <div className="p-8 text-center text-slate-500 text-xs">
-              No requisitions created yet. Click "New Emergency Requisition" to request blood units.
-            </div>
-          ) : (
-            <table className="w-full text-left text-xs text-slate-300">
-              <thead className="bg-slate-900/90 text-slate-400 uppercase text-[10px] tracking-wider border-b border-slate-800">
-                <tr>
-                  <th className="py-2.5 px-3">Req ID</th>
-                  <th className="py-2.5 px-3">Hospital Name</th>
-                  <th className="py-2.5 px-3">Hospital Address</th>
-                  <th className="py-2.5 px-3">Blood Group</th>
-                  <th className="py-2.5 px-3">Units</th>
-                  <th className="py-2.5 px-3">Urgency</th>
-                  <th className="py-2.5 px-3">Patient / Ward</th>
-                  <th className="py-2.5 px-3">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60">
-                {requestsList.map((req, idx) => {
-                  const reqId = req.id || req._id || `REQ-${idx + 1}`;
-                  const isApproved = req.status === 'APPROVED';
-                  const isAllocated = req.status === 'ALLOCATED';
-                  const isRejected = req.status === 'REJECTED';
+        {/* Tab Controls for Active Pending vs Fulfilled History */}
+        <div className="flex items-center space-x-2 border-b border-slate-800 pb-2">
+          <button
+            type="button"
+            onClick={() => setRequisitionTab('pending')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 ${
+              requisitionTab === 'pending'
+                ? 'bg-amber-950/80 text-amber-300 border border-amber-700/80'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Clock className="w-3.5 h-3.5" />
+            <span>Active Pending Requisitions ({pendingRequests.length})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setRequisitionTab('fulfilled')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 ${
+              requisitionTab === 'fulfilled'
+                ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-700/80'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            <span>Fulfilled & Completed Archive ({fulfilledRequests.length})</span>
+          </button>
+        </div>
 
-                  return (
-                    <tr key={reqId} className="hover:bg-slate-900/40">
-                      <td className="py-2.5 px-3 font-mono text-slate-400">{reqId}</td>
-                      <td className="py-2.5 px-3 font-bold text-white">
-                        {req.hospital_name || req.hospital}
-                        {req.contact_phone && (
-                          <span className="block text-[10px] text-slate-400 font-mono">{req.contact_phone}</span>
-                        )}
-                      </td>
-                      <td className="py-2.5 px-3 text-slate-400 max-w-xs truncate" title={req.hospital_address || ''}>
-                        {req.hospital_address || 'Address on file'}
-                      </td>
-                      <td className="py-2.5 px-3 font-extrabold text-blood-400 text-sm">
-                        {req.blood || req.blood_group}
-                      </td>
-                      <td className="py-2.5 px-3 font-semibold text-white">
-                        {req.units || req.units_needed} units
-                      </td>
-                      <td className="py-2.5 px-3">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold ${
-                          (req.urgency || req.urgency_level) === 'EMERGENCY'
-                            ? 'bg-blood-950 text-blood-400 border border-blood-800 animate-pulse'
-                            : 'bg-amber-950 text-amber-400 border border-amber-800'
-                        }`}>
-                          {req.urgency || req.urgency_level}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3 text-slate-400">{req.patient || req.patient_name}</td>
-                      <td className="py-2.5 px-3 font-bold">
-                        <span className={`${
-                          isApproved ? 'text-emerald-400' :
-                          isAllocated ? 'text-sky-400' :
-                          isRejected ? 'text-rose-400' : 'text-amber-400'
-                        }`}>
-                          {req.status || 'PENDING'}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+        {/* Requisitions Tables */}
+        <div className="overflow-x-auto">
+          {requisitionTab === 'pending' ? (
+            pendingRequests.length === 0 ? (
+              <div className="p-8 text-center text-slate-500 text-xs">
+                No active pending requisitions. All facility requests have been fulfilled or click "New Emergency Requisition" to request blood units.
+              </div>
+            ) : (
+              <table className="w-full text-left text-xs text-slate-300">
+                <thead className="bg-slate-900/90 text-slate-400 uppercase text-[10px] tracking-wider border-b border-slate-800">
+                  <tr>
+                    <th className="py-2.5 px-3">Req ID</th>
+                    <th className="py-2.5 px-3">Hospital Name</th>
+                    <th className="py-2.5 px-3">Hospital Address</th>
+                    <th className="py-2.5 px-3">Blood Group</th>
+                    <th className="py-2.5 px-3">Units Needed</th>
+                    <th className="py-2.5 px-3">Urgency</th>
+                    <th className="py-2.5 px-3">Patient / Ward</th>
+                    <th className="py-2.5 px-3">Status</th>
+                    <th className="py-2.5 px-3">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {pendingRequests.map((req, idx) => {
+                    const reqId = req.id || req._id || `REQ-${idx + 1}`;
+                    const needed = Number(req.units_needed || req.units || 1);
+                    const fulfilled = Number(req.units_fulfilled || 0);
+
+                    return (
+                      <tr key={reqId} className="hover:bg-slate-900/40">
+                        <td className="py-2.5 px-3 font-mono text-slate-400">#{reqId}</td>
+                        <td className="py-2.5 px-3 font-bold text-white">
+                          {req.hospital_name || req.hospital}
+                          {req.contact_phone && (
+                            <span className="block text-[10px] text-slate-400 font-mono">{req.contact_phone}</span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-400 max-w-xs truncate" title={req.hospital_address || ''}>
+                          {req.hospital_address || 'Address on file'}
+                        </td>
+                        <td className="py-2.5 px-3 font-extrabold text-blood-400 text-sm">
+                          {req.blood || req.blood_group}
+                        </td>
+                        <td className="py-2.5 px-3 font-semibold text-white">
+                          <div>{fulfilled > 0 ? `${fulfilled} / ${needed} units` : `${needed} units`}</div>
+                          {fulfilled > 0 && (
+                            <span className="inline-block text-[10px] text-amber-400 font-medium">
+                              Partially satisfied ({needed - fulfilled} remaining)
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold ${
+                            (req.urgency || req.urgency_level) === 'EMERGENCY'
+                              ? 'bg-blood-950 text-blood-400 border border-blood-800 animate-pulse'
+                              : 'bg-amber-950 text-amber-400 border border-amber-800'
+                          }`}>
+                            {req.urgency || req.urgency_level}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-400">{req.patient || req.patient_name}</td>
+                        <td className="py-2.5 px-3 font-bold">
+                          <span className="text-amber-400">
+                            {req.status || 'PENDING'}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <button
+                            type="button"
+                            onClick={() => openFulfillModal(req)}
+                            className="px-2.5 py-1 rounded-lg bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border border-emerald-800 text-[11px] font-bold transition flex items-center space-x-1 shadow-sm"
+                            title="Record donation fulfilling this requisition"
+                          >
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span>Fulfill</span>
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )
+          ) : (
+            fulfilledRequests.length === 0 ? (
+              <div className="p-8 text-center text-slate-500 text-xs">
+                No fulfilled requisitions archived yet. Completed requisitions will appear here.
+              </div>
+            ) : (
+              <table className="w-full text-left text-xs text-slate-300">
+                <thead className="bg-slate-900/90 text-slate-400 uppercase text-[10px] tracking-wider border-b border-slate-800">
+                  <tr>
+                    <th className="py-2.5 px-3">Req ID</th>
+                    <th className="py-2.5 px-3">Hospital Name</th>
+                    <th className="py-2.5 px-3">Blood Group</th>
+                    <th className="py-2.5 px-3">Units Satisfied</th>
+                    <th className="py-2.5 px-3">Urgency</th>
+                    <th className="py-2.5 px-3">Patient / Ward</th>
+                    <th className="py-2.5 px-3">Fulfilled Date</th>
+                    <th className="py-2.5 px-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {fulfilledRequests.map((req, idx) => {
+                    const reqId = req.id || req._id || `REQ-${idx + 1}`;
+                    return (
+                      <tr key={reqId} className="hover:bg-slate-900/40">
+                        <td className="py-2.5 px-3 font-mono text-slate-400">#{reqId}</td>
+                        <td className="py-2.5 px-3 font-bold text-white">{req.hospital_name || req.hospital}</td>
+                        <td className="py-2.5 px-3 font-extrabold text-blood-400 text-sm">{req.blood || req.blood_group}</td>
+                        <td className="py-2.5 px-3 font-semibold text-emerald-400">{req.units_fulfilled || req.units_needed || req.units} units</td>
+                        <td className="py-2.5 px-3">
+                          <span className="px-2 py-0.5 rounded text-[10px] font-extrabold bg-slate-800 text-slate-300">
+                            {req.urgency || req.urgency_level}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-400">{req.patient || req.patient_name}</td>
+                        <td className="py-2.5 px-3 font-mono text-slate-400">{req.fulfilled_at || 'Archived'}</td>
+                        <td className="py-2.5 px-3 font-bold">
+                          <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 font-bold">
+                            {req.status || 'FULFILLED'}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )
           )}
         </div>
       </div>
@@ -421,7 +538,14 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
               <tbody className="divide-y divide-slate-800/60">
                 {hospitalDonations.map((d, idx) => (
                   <tr key={d.id || idx} className="hover:bg-slate-900/40">
-                    <td className="py-2.5 px-3 font-mono font-bold text-blood-400">{d.certificate_code}</td>
+                    <td className="py-2.5 px-3 font-mono font-bold text-blood-400">
+                      {d.certificate_code}
+                      {d.requisition_id && (
+                        <span className="block text-[10px] text-emerald-400 font-sans font-semibold">
+                          Fulfills Req #{d.requisition_id}
+                        </span>
+                      )}
+                    </td>
                     <td className="py-2.5 px-3 font-bold text-white">
                       {d.donor_name}
                       <span className="block text-[10px] text-slate-500 font-normal">{d.donor_email}</span>
@@ -603,6 +727,37 @@ export default function HospitalDashboard({ donorsList = [], requestsList = [], 
             )}
 
             <form onSubmit={handleRecordDonation} className="space-y-3 text-xs">
+              <div>
+                <label className="text-slate-300 block mb-1 font-semibold">Link to Requisition (Auto-Fulfill)</label>
+                <select
+                  value={donationForm.requisition_id}
+                  onChange={(e) => {
+                    const selectedId = e.target.value;
+                    const matchingReq = pendingRequests.find(r => String(r.id) === String(selectedId));
+                    if (matchingReq) {
+                      const remaining = Math.max(1, (Number(matchingReq.units_needed || matchingReq.units) - Number(matchingReq.units_fulfilled || 0)));
+                      setDonationForm(prev => ({
+                        ...prev,
+                        requisition_id: selectedId,
+                        blood_group: matchingReq.blood_group || matchingReq.blood || prev.blood_group,
+                        units: remaining,
+                        notes: `Fulfillment donation for Requisition #${selectedId} (${matchingReq.patient_name || matchingReq.patient || 'Patient'})`
+                      }));
+                    } else {
+                      setDonationForm(prev => ({ ...prev, requisition_id: selectedId }));
+                    }
+                  }}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none"
+                >
+                  <option value="">None (Standard Voluntary Facility Donation)</option>
+                  {pendingRequests.map(r => (
+                    <option key={r.id} value={r.id}>
+                      Req #{r.id} — {r.patient_name || r.patient || 'Patient'} ({r.blood_group || r.blood}, {Math.max(1, (Number(r.units_needed || r.units) - Number(r.units_fulfilled || 0)))} unit(s) remaining)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="text-slate-300 block mb-1 font-semibold">Donor Email *</label>

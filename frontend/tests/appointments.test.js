@@ -30,11 +30,11 @@ test('returns a clear no-appointment result for empty or missing input', () => {
   assert.equal(getNextUpcomingAppointment(null, new Date(2026, 9, 22, 10, 0)), null);
 });
 
-test('does not guess that an already-started or same-day unknown-time appointment is upcoming', () => {
+test('recognizes CONFIRMED and APPROVED statuses as upcoming active appointments', () => {
   const now = new Date(2026, 9, 22, 10, 0);
   const appointments = [
-    { id: 1, appointment_date: '2026-10-22', time_slot: 'Morning (8 AM - 12 PM)', status: 'SCHEDULED' },
-    { id: 2, appointment_date: '2026-10-22', time_slot: 'TBD', status: 'SCHEDULED' }
+    { id: 10, appointment_date: '2026-10-25', time_slot: 'Morning (8 AM - 12 PM)', status: 'CONFIRMED' },
+    { id: 11, appointment_date: '2026-10-26', time_slot: 'Morning (8 AM - 12 PM)', status: 'APPROVED' }
   ];
-  assert.equal(getNextUpcomingAppointment(appointments, now), null);
+  assert.equal(getNextUpcomingAppointment(appointments, now).id, 10);
 });

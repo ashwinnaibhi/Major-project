@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { RECOVERY_PERIOD_MESSAGE, ACTIVE_APPOINTMENT_MESSAGE, ACTIVE_APPOINTMENT_STATUSES } from '../utils/recoveryPeriod';
 
 import { getApiBaseUrl } from '../api/config';
 const API_BASE = getApiBaseUrl();
@@ -9,7 +10,7 @@ import {
   Heart, CalendarCheck, Clock, Award, Bell, ShieldCheck,
   AlertCircle, PhoneCall, Building2, Send, CheckCircle, LogOut,
   UserPlus, LogIn, Mail, Phone, MapPin, Droplet, RefreshCw,
-  User, CheckCircle2, XCircle, Calendar, ShieldAlert, X, Printer, FileCheck
+  User, CheckCircle2, XCircle, Calendar, ShieldAlert, X, Printer, FileCheck, AlertTriangle
 } from 'lucide-react';
 
 export default function DonorDashboard({
@@ -100,6 +101,39 @@ export default function DonorDashboard({
   const [emergencyHistoryError, setEmergencyHistoryError] = useState('');
   const [availabilityPrediction, setAvailabilityPrediction] = useState({ status: 'idle', data: null, message: '' });
   const [appointmentError, setAppointmentError] = useState('');
+  const [bookingEligibility, setBookingEligibility] = useState(null);
+  const [eligibilityLoading, setEligibilityLoading] = useState(false);
+  const [eligibilityError, setEligibilityError] = useState('');
+
+  const loadEligibility = useCallback(async () => {
+    if (!currentUser?.token) {
+      setBookingEligibility(null);
+      return;
+    }
+    setEligibilityLoading(true);
+    setEligibilityError('');
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/appointments/eligibility`, {
+        headers: { Authorization: `Bearer ${currentUser.token}` }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || 'Unable to verify donation history. Please retry.');
+      }
+      setBookingEligibility(data);
+    } catch (err) {
+      setBookingEligibility(null);
+      setEligibilityError(err.message || 'Unable to verify donation history. Please retry.');
+    } finally {
+      setEligibilityLoading(false);
+    }
+  }, [currentUser?.token]);
+
+  useEffect(() => {
+    if (isLoggedIn && currentUser?.token) {
+      loadEligibility();
+    }
+  }, [isLoggedIn, currentUser?.token, activeSubTab, loadEligibility]);
   const [requestActionBusy, setRequestActionBusy] = useState({});
   const [requestActionMessages, setRequestActionMessages] = useState({});
   const [requestActionNotice, setRequestActionNotice] = useState('');
@@ -272,33 +306,121 @@ export default function DonorDashboard({
     }
   };
 
-  // Appointment booking uses the authenticated donor identity on the backend.
+  const [isBookingAppointment, setIsBookingAppointment] = useState(false);
+  const [cancellingAppointmentId, setCancellingAppointmentId] = useState(null);
+
+  const handleCancelAppointment = async (appointmentId) => {
+    if (!currentUser?.token) return;
+    if (!window.confirm('Are you sure you want to cancel this appointment?')) return;
+    setCancellingAppointmentId(appointmentId);
+    setAppMsg('');
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/appointments/${appointmentId}/status?status=CANCELLED`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${currentUser.token}` }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to cancel appointment.');
+      }
+      setAppMsg('Appointment cancelled successfully.');
+      await loadEligibility();
+      try {
+        const profileResponse = await fetch(`${API_BASE}/api/v1/donors/me`, { headers: { Authorization: `Bearer ${currentUser.token}` } });
+        const profileData = await profileResponse.json().catch(() => ({}));
+        if (profileResponse.ok && Array.isArray(profileData.appointments)) {
+          setAppointments(profileData.appointments.slice().sort((a, b) => {
+            const active = (v) => ['SCHEDULED', 'PENDING', 'CONFIRMED', 'APPROVED'].includes(String(v.status || '').toUpperCase()) ? 0 : 1;
+            return active(a) - active(b) || String(a.appointment_date || a.date || '').localeCompare(String(b.appointment_date || b.date || ''));
+          }));
+        }
+      } catch {}
+    } catch (err) {
+      setAppMsg(err.message || 'Unable to cancel appointment.');
+    } finally {
+      setCancellingAppointmentId(null);
+    }
+  };
+
+  // Appointment booking enforces authenticated 3-month recovery validation and single active appointment
   const handleBookAppointment = async (e) => {
     e.preventDefault();
     setAppMsg('');
+    if (isBookingAppointment) return;
     if (!isVerified) { setAppMsg('Please verify your email address to unlock appointment booking.'); return; }
-    if (!newAppDate) { setAppMsg('Please select an appointment date.'); return; }
     if (!currentUser?.token) { setAppMsg('Please sign in before booking an appointment.'); return; }
+    if (eligibilityLoading) { setAppMsg('Checking appointment eligibility… Please wait.'); return; }
+    if (eligibilityError) { setAppMsg('Unable to verify appointment eligibility. Please retry before booking.'); return; }
+
+    if (bookingEligibility?.has_active_appointment) {
+      setAppMsg(ACTIVE_APPOINTMENT_MESSAGE);
+      return;
+    }
+    if (bookingEligibility && !bookingEligibility.eligible) {
+      setAppMsg(bookingEligibility.message || RECOVERY_PERIOD_MESSAGE);
+      return;
+    }
+    if (!newAppDate) { setAppMsg('Please select an appointment date.'); return; }
+    if (bookingEligibility?.earliest_eligible_date && newAppDate < bookingEligibility.earliest_eligible_date) {
+      setAppMsg(RECOVERY_PERIOD_MESSAGE);
+      return;
+    }
+
+    setIsBookingAppointment(true);
     try {
       const response = await fetch(`${API_BASE}/api/v1/appointments`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${currentUser.token}` },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${currentUser.token}` },
         body: JSON.stringify({ appointment_date: newAppDate, time_slot: newAppSlot, center_name: newAppCenter || 'Central Blood Bank Hub #1' })
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.detail || `Appointment booking failed (HTTP ${response.status}).`);
+      if (!response.ok) {
+        const errorDetail = data.detail;
+        const errorMsg = typeof errorDetail === 'string'
+          ? errorDetail
+          : (errorDetail?.message || data.message || `Appointment booking failed (HTTP ${response.status}).`);
+
+        if (errorDetail?.error_code === 'ACTIVE_APPOINTMENT_EXISTS') {
+          setBookingEligibility(prev => ({
+            ...(prev || {}),
+            eligible: false,
+            has_active_appointment: true,
+            active_appointment: errorDetail.active_appointment,
+            message: errorMsg
+          }));
+        } else if (errorDetail?.earliest_eligible_date || errorDetail?.error_code === 'RECOVERY_PERIOD_ACTIVE') {
+          setBookingEligibility(prev => ({
+            ...(prev || {}),
+            eligible: false,
+            recovery_period_active: true,
+            last_donation_date: errorDetail.last_donation_date,
+            earliest_eligible_date: errorDetail.earliest_eligible_date,
+            message: errorMsg
+          }));
+        }
+        throw new Error(errorMsg);
+      }
       setAppMsg(data.message || 'Appointment saved successfully.');
       setNewAppDate('');
       setAppointmentError('');
+      await loadEligibility();
       try {
         const profileResponse = await fetch(`${API_BASE}/api/v1/donors/me`, { headers: { Authorization: `Bearer ${currentUser.token}` } });
         const profileData = await profileResponse.json().catch(() => ({}));
         if (!profileResponse.ok) throw new Error(profileData.detail || 'Appointment list refresh failed.');
-        setAppointments((Array.isArray(profileData.appointments) ? profileData.appointments : []).slice().sort((a, b) => { const active = (v) => ['SCHEDULED', 'PENDING'].includes(String(v.status || '').toUpperCase()) ? 0 : 1; return active(a) - active(b) || String(a.appointment_date || a.date || '').localeCompare(String(b.appointment_date || b.date || '')); }));
+        setAppointments((Array.isArray(profileData.appointments) ? profileData.appointments : []).slice().sort((a, b) => {
+          const active = (v) => ['SCHEDULED', 'PENDING', 'CONFIRMED', 'APPROVED'].includes(String(v.status || '').toUpperCase()) ? 0 : 1;
+          return active(a) - active(b) || String(a.appointment_date || a.date || '').localeCompare(String(b.appointment_date || b.date || ''));
+        }));
         setAppointmentError('');
       } catch {
         setAppointmentError('Your appointment was saved, but the list could not be refreshed. Reload the dashboard to view it.');
       }
-    } catch (error) { setAppMsg(error.message || 'Appointment could not be saved.'); }
+    } catch (error) {
+      setAppMsg(error.message || 'Unable to save appointment.');
+    } finally {
+      setIsBookingAppointment(false);
+    }
   };
 
   // Handle Resend Verification Email
@@ -1192,9 +1314,84 @@ export default function DonorDashboard({
               <p className="text-xs text-slate-400">Schedule your next life-saving donation drive visit.</p>
             </div>
 
+            {/* Active Appointment Notice & Details */}
+            {bookingEligibility?.has_active_appointment && (
+              <div role="alert" className="p-4 rounded-xl bg-blue-950/70 border border-blue-800 text-blue-200 text-xs space-y-3">
+                <div className="flex items-start space-x-2.5">
+                  <Calendar className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
+                  <div className="space-y-2 flex-1">
+                    <p className="font-bold text-blue-300">
+                      You already have an active blood donation appointment. Please complete or cancel your existing appointment before booking another.
+                    </p>
+                    {bookingEligibility.active_appointment && (
+                      <div className="p-3 rounded-lg bg-slate-900/90 border border-blue-900/60 space-y-1 text-[11px] text-slate-300">
+                        <div><strong className="text-white">Appointment Date:</strong> {bookingEligibility.active_appointment.appointment_date}</div>
+                        <div><strong className="text-white">Time Slot:</strong> {bookingEligibility.active_appointment.time_slot}</div>
+                        <div><strong className="text-white">Center:</strong> {bookingEligibility.active_appointment.center_name}</div>
+                        <div className="flex items-center space-x-2 pt-0.5">
+                          <strong className="text-white">Status:</strong>
+                          <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 font-semibold">
+                            {bookingEligibility.active_appointment.status}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    {bookingEligibility.active_appointment?.id && (
+                      <button
+                        type="button"
+                        disabled={cancellingAppointmentId === bookingEligibility.active_appointment.id}
+                        onClick={() => handleCancelAppointment(bookingEligibility.active_appointment.id)}
+                        className="px-3 py-1.5 rounded-lg bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800 text-xs font-bold transition disabled:opacity-50"
+                      >
+                        {cancellingAppointmentId === bookingEligibility.active_appointment.id ? 'Cancelling Appointment…' : 'Cancel Existing Appointment'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Recovery Period Ineligibility Notice */}
+            {!bookingEligibility?.has_active_appointment && bookingEligibility && !bookingEligibility.eligible && (
+              <div role="alert" className="p-4 rounded-xl bg-amber-950/70 border border-amber-800 text-amber-200 text-xs space-y-2">
+                <div className="flex items-start space-x-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="font-bold text-amber-300">
+                      You must wait for the recovery period to complete before booking another blood donation appointment.
+                    </p>
+                    {bookingEligibility.last_donation_date && (
+                      <p className="text-slate-300 text-[11px]">
+                        <strong className="text-white">Previous Donation Date:</strong> {bookingEligibility.last_donation_date}
+                      </p>
+                    )}
+                    {bookingEligibility.earliest_eligible_date && (
+                      <p className="text-slate-300 text-[11px]">
+                        <strong className="text-white">Earliest Eligible Date:</strong> {bookingEligibility.earliest_eligible_date}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Donation History Verification Error Notice */}
+            {eligibilityError && (
+              <div role="alert" className="p-3 rounded-xl bg-rose-950/70 border border-rose-800 text-rose-200 text-xs flex items-center justify-between">
+                <span>{eligibilityError}</span>
+                <button
+                  type="button"
+                  onClick={loadEligibility}
+                  className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-[10px] transition"
+                >
+                  Retry Verification
+                </button>
+              </div>
+            )}
+
             {appMsg && (
               <div className={`p-3 rounded-xl text-xs font-bold text-center ${
-                appMsg.includes('verify')
+                appMsg.includes('verify') || appMsg.includes('Recovery Period') || appMsg.includes('not eligible') || appMsg.includes('failed') || appMsg.includes('Unable')
                   ? 'bg-rose-950/80 border border-rose-800 text-rose-300'
                   : 'bg-emerald-950/80 border border-emerald-800 text-emerald-300'
               }`}>
@@ -1208,10 +1405,11 @@ export default function DonorDashboard({
                 <input
                   type="date"
                   required
-                  min={new Date().toISOString().slice(0, 10)}
+                  min={bookingEligibility?.earliest_eligible_date || new Date().toISOString().slice(0, 10)}
                   value={newAppDate}
                   onChange={(e) => setNewAppDate(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
+                  disabled={Boolean(!isVerified || (bookingEligibility && !bookingEligibility.eligible) || eligibilityError)}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white disabled:opacity-50"
                 />
               </div>
 
@@ -1220,7 +1418,8 @@ export default function DonorDashboard({
                 <select
                   value={newAppSlot}
                   onChange={(e) => setNewAppSlot(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
+                  disabled={Boolean(!isVerified || (bookingEligibility && !bookingEligibility.eligible) || eligibilityError)}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white disabled:opacity-50"
                 >
                   <option value="Morning (8 AM - 12 PM)">Morning (8 AM - 12 PM)</option>
                   <option value="Afternoon (12 PM - 4 PM)">Afternoon (12 PM - 4 PM)</option>
@@ -1233,7 +1432,8 @@ export default function DonorDashboard({
                 <select
                   value={newAppCenter}
                   onChange={(e) => setNewAppCenter(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
+                  disabled={Boolean(!isVerified || (bookingEligibility && !bookingEligibility.eligible) || eligibilityError || isBookingAppointment)}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white disabled:opacity-50"
                 >
                   <option value="Central Blood Bank Hub #1">Central Blood Bank Hub #1</option>
                   <option value="City General Blood Center">City General Blood Center</option>
@@ -1243,14 +1443,26 @@ export default function DonorDashboard({
 
               <button
                 type="submit"
-                disabled={!isVerified}
+                disabled={Boolean(!isVerified || (bookingEligibility && !bookingEligibility.eligible) || eligibilityError || eligibilityLoading || isBookingAppointment)}
                 className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all ${
-                  isVerified
+                  isVerified && (!bookingEligibility || bookingEligibility.eligible) && !eligibilityError && !eligibilityLoading && !isBookingAppointment
                     ? 'bg-gradient-to-r from-blood-600 to-blood-700 hover:from-blood-500 hover:to-blood-600 text-white shadow-md'
                     : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
                 }`}
               >
-                {isVerified ? 'Confirm Appointment Booking' : 'Verify Email to Book Appointment'}
+                {!isVerified
+                  ? 'Verify Email to Book Appointment'
+                  : eligibilityLoading
+                  ? 'Verifying Appointment Eligibility…'
+                  : eligibilityError
+                  ? 'Verification Required — Retry Above'
+                  : isBookingAppointment
+                  ? 'Booking Appointment…'
+                  : bookingEligibility?.has_active_appointment
+                  ? 'Active Appointment Exists (Booking Disabled)'
+                  : (bookingEligibility && !bookingEligibility.eligible)
+                  ? 'Recovery Period Active (Ineligible)'
+                  : 'Confirm Appointment Booking'}
               </button>
             </form>
           </div>
@@ -1270,18 +1482,35 @@ export default function DonorDashboard({
               ) : appointments.length === 0 ? (
                 <p className="text-xs text-slate-500">No appointments recorded.</p>
               ) : (
-                appointments.map((app, idx) => (
-                  <div key={idx} className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-1.5 text-xs">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-white text-sm">{app.appointment_date || app.date}</span>
-                      <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 font-semibold">
-                        {app.status || 'SCHEDULED'}
-                      </span>
+                appointments.map((app, idx) => {
+                  const isActive = ['SCHEDULED', 'PENDING', 'CONFIRMED', 'APPROVED'].includes(String(app.status || '').toUpperCase());
+                  return (
+                    <div key={app.id || idx} className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-1.5 text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-white text-sm">{app.appointment_date || app.date}</span>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${
+                          isActive ? 'bg-emerald-950 text-emerald-400 border-emerald-800' : 'bg-slate-800 text-slate-400 border-slate-700'
+                        }`}>
+                          {app.status || 'SCHEDULED'}
+                        </span>
+                      </div>
+                      <p className="text-slate-400">{app.time_slot}</p>
+                      <p className="text-slate-500 text-[11px]">{app.center_name}</p>
+                      {isActive && app.id && (
+                        <div className="pt-1.5 flex justify-end">
+                          <button
+                            type="button"
+                            disabled={cancellingAppointmentId === app.id}
+                            onClick={() => handleCancelAppointment(app.id)}
+                            className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-rose-300 border border-rose-900/60 text-[11px] font-semibold transition disabled:opacity-50"
+                          >
+                            {cancellingAppointmentId === app.id ? 'Cancelling…' : 'Cancel Appointment'}
+                          </button>
+                        </div>
+                      )}
                     </div>
-                    <p className="text-slate-400">{app.time_slot}</p>
-                    <p className="text-slate-500 text-[11px]">{app.center_name}</p>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>

@@ -4,7 +4,12 @@ import {
   CalendarCheck, Shield, Award, User, History, Bell, Calendar 
 } from 'lucide-react';
 
-export default function Sidebar({ activeTab, setActiveTab, activeRole }) {
+export default function Sidebar({ activeTab, setActiveTab, activeRole, currentUser }) {
+  const isAdmin = Boolean(
+    currentUser?.token &&
+    currentUser?.isLoggedIn &&
+    ['ADMIN', 'ROLE_ADMIN'].includes(String(currentUser?.role || '').toUpperCase().replace(/^ROLE_/, ''))
+  );
   // Navigation for DONOR role
   const donorNavItems = [
     { id: 'donor_dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -62,24 +67,26 @@ export default function Sidebar({ activeTab, setActiveTab, activeRole }) {
           </nav>
         </div>
 
-        {/* ML Performance Box */}
-        <div className="p-3.5 rounded-2xl bg-gradient-to-b from-slate-900 to-slate-950 border border-slate-800 space-y-2">
-          <div className="flex items-center space-x-2 text-blood-400">
-            <Award className="w-4 h-4" />
-            <h4 className="text-xs font-bold text-slate-200">Random Forest v1.0</h4>
-          </div>
-          <p className="text-[11px] text-slate-400">Trained on 1,200+ donor response histories.</p>
-          <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800/80 text-[10px]">
-            <div>
-              <span className="text-slate-500 block">Accuracy</span>
-              <span className="font-bold text-emerald-400 text-xs">90.42%</span>
+        {/* ML Performance Box - rendered only for authenticated administrator */}
+        {isAdmin && (
+          <div className="p-3.5 rounded-2xl bg-gradient-to-b from-slate-900 to-slate-950 border border-slate-800 space-y-2">
+            <div className="flex items-center space-x-2 text-blood-400">
+              <Award className="w-4 h-4" />
+              <h4 className="text-xs font-bold text-slate-200">Random Forest v1.0</h4>
             </div>
-            <div>
-              <span className="text-slate-500 block">F1 Score</span>
-              <span className="font-bold text-blood-400 text-xs">93.80%</span>
+            <p className="text-[11px] text-slate-400">Trained on 1,200+ donor response histories.</p>
+            <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800/80 text-[10px]">
+              <div>
+                <span className="text-slate-500 block">Accuracy</span>
+                <span className="font-bold text-emerald-400 text-xs">90.42%</span>
+              </div>
+              <div>
+                <span className="text-slate-500 block">F1 Score</span>
+                <span className="font-bold text-blood-400 text-xs">93.80%</span>
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
 
       <div className="pt-4 border-t border-slate-800 text-[11px] text-slate-500 flex items-center justify-between px-2">

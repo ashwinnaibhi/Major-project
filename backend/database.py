@@ -111,7 +111,9 @@ CREATE TABLE IF NOT EXISTS blood_requests (
     destination_longitude DOUBLE PRECISION,
     hospital_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     assigned_admin_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-    assigned_admin_id INTEGER NULL
+    assigned_admin_id INTEGER NULL,
+    units_fulfilled INTEGER DEFAULT 0,
+    fulfilled_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS appointments (
@@ -246,6 +248,7 @@ CREATE TABLE IF NOT EXISTS donation_history (
     hospital_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     hospital_name TEXT NOT NULL,
     appointment_id INTEGER REFERENCES appointments(id) ON DELETE SET NULL,
+    requisition_id INTEGER REFERENCES blood_requests(id) ON DELETE SET NULL,
     status TEXT NOT NULL DEFAULT 'CONFIRMED'
         CHECK(status IN ('PENDING', 'APPROVED', 'REJECTED', 'CONFIRMED')),
     approved_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -415,11 +418,51 @@ class PostgresConnectionWrapper:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def init_postgres_schema(conn: PostgresConnectionWrapper) -> None:
-    """Ensures all 14 tables and indexes exist in PostgreSQL."""
+    """Ensures all 14 tables, indexes, and required schema updates exist in PostgreSQL."""
     for statement in POSTGRES_SCHEMA_DDL.strip().split(";"):
         stmt = statement.strip()
         if stmt:
             conn._conn.cursor().execute(stmt)
+    migration_stmts = [
+        "ALTER TABLE blood_requests ADD COLUMN IF NOT EXISTS units_fulfilled INTEGER DEFAULT 0;",
+        "ALTER TABLE blood_requests ADD COLUMN IF NOT EXISTS fulfilled_at TEXT;",
+        "ALTER TABLE donation_history ADD COLUMN IF NOT EXISTS requisition_id INTEGER REFERENCES blood_requests(id) ON DELETE SET NULL;"
+    ]
+    for m_stmt in migration_stmts:
+        try:
+            conn._conn.cursor().execute(m_stmt)
+        except Exception:
+            pass
+    conn.commit()
+
+
+def _migrate_sqlite(conn: sqlite3.Connection) -> None:
+    """Ensures tables and columns exist in SQLite database."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS emergency_request_responses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id INTEGER NOT NULL,
+            donor_id TEXT NOT NULL,
+            response TEXT NOT NULL CHECK(response IN ('ACCEPTED', 'REJECTED')),
+            created_at TEXT NOT NULL,
+            UNIQUE(request_id, donor_id),
+            FOREIGN KEY(request_id) REFERENCES blood_requests(id)
+        )
+    """)
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(blood_requests)").fetchall()]
+        if cols and "units_fulfilled" not in cols:
+            conn.execute("ALTER TABLE blood_requests ADD COLUMN units_fulfilled INTEGER DEFAULT 0")
+        if cols and "fulfilled_at" not in cols:
+            conn.execute("ALTER TABLE blood_requests ADD COLUMN fulfilled_at TEXT")
+    except Exception:
+        pass
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(donation_history)").fetchall()]
+        if cols and "requisition_id" not in cols:
+            conn.execute("ALTER TABLE donation_history ADD COLUMN requisition_id INTEGER REFERENCES blood_requests(id)")
+    except Exception:
+        pass
     conn.commit()
 
 
@@ -449,17 +492,7 @@ def get_db_connection():
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout=30000;")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS emergency_request_responses (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                request_id INTEGER NOT NULL,
-                donor_id TEXT NOT NULL,
-                response TEXT NOT NULL CHECK(response IN ('ACCEPTED', 'REJECTED')),
-                created_at TEXT NOT NULL,
-                UNIQUE(request_id, donor_id),
-                FOREIGN KEY(request_id) REFERENCES blood_requests(id)
-            )
-        """)
+        _migrate_sqlite(conn)
         return conn
 
 

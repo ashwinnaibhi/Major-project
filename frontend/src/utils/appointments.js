@@ -1,4 +1,4 @@
-const UPCOMING_APPOINTMENT_STATUSES = new Set(['SCHEDULED', 'PENDING']);
+const UPCOMING_APPOINTMENT_STATUSES = new Set(['SCHEDULED', 'PENDING', 'CONFIRMED', 'APPROVED']);
 
 function appointmentDateParts(appointment) {
   const value = String(appointment?.appointment_date || appointment?.date || '').trim();
