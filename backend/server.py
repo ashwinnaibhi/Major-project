@@ -32,7 +32,7 @@ else:
     load_dotenv()
 
 from database import get_db, is_postgres, init_postgres_schema, get_db_connection
-from provision_hospitals import generate_hospital_username, DEFAULT_INITIAL_PASSWORD
+from provision_hospitals import generate_hospital_username, DEFAULT_INITIAL_PASSWORD, provision_all_hospitals
 from email_service import (
     send_verification_email,
     send_verification_smtp_email,
@@ -86,6 +86,9 @@ async def lifespan(app: FastAPI):
         conn = get_db_connection()
         try:
             init_postgres_schema(conn)
+            provision_all_hospitals(conn=conn)
+        except Exception as exc:
+            logger.error("Startup database initialization/provisioning error: %s", exc)
         finally:
             conn.close()
     yield
@@ -608,6 +611,16 @@ def admin_reset_hospital_password(hospital_user_id: int,
         "must_change_password": True,
         "message": f"Password for hospital account {hosp_user['email']} has been reset."
     }
+
+
+@app.post("/api/v1/admin/provision-hospitals")
+def admin_provision_hospitals(dry_run: bool = Query(False),
+                              user: dict = Depends(get_current_user),
+                              conn: Any = Depends(get_db)):
+    if user["role"] != "ROLE_ADMIN":
+        raise HTTPException(status_code=403, detail="Administrator access required")
+    summary = provision_all_hospitals(dry_run=dry_run, conn=conn)
+    return {"success": True, "dry_run": dry_run, "summary": summary}
 
 
 def _do_register_donor(

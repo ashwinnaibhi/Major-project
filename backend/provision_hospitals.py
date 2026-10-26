@@ -83,8 +83,11 @@ def generate_hospital_username(taluk: str, hospital_name: str, conn: Any = None,
         candidate = f"{t_clean}_{slug}{counter}@haemopulse.in"
 
 
-def provision_all_hospitals(initial_password: str = DEFAULT_INITIAL_PASSWORD) -> dict[str, Any]:
-    conn = database.get_db_connection()
+def provision_all_hospitals(initial_password: str = DEFAULT_INITIAL_PASSWORD, dry_run: bool = False, conn: Any = None) -> dict[str, Any]:
+    close_conn = False
+    if conn is None:
+        conn = database.get_db_connection()
+        close_conn = True
     now_iso = datetime.utcnow().isoformat(sep=" ", timespec="seconds")
     results = {
         "migrated": [],
@@ -94,7 +97,13 @@ def provision_all_hospitals(initial_password: str = DEFAULT_INITIAL_PASSWORD) ->
     }
 
     # 1. Migrate User ID 3 (Koppa Government Hospital)
-    user_3 = conn.execute("SELECT * FROM users WHERE id = 3").fetchone()
+    user_3 = conn.execute("""
+        SELECT * FROM users
+        WHERE LOWER(email) = 'ashwinkumarns1995@gmail.com'
+           OR LOWER(email) = 'koppa_ghpc@haemopulse.in'
+           OR (id = 3 AND role = 'ROLE_HOSPITAL')
+        LIMIT 1
+    """).fetchone()
     if user_3:
         target_username = "koppa_ghpc@haemopulse.in"
         current_email = user_3["email"]
@@ -111,11 +120,12 @@ def provision_all_hospitals(initial_password: str = DEFAULT_INITIAL_PASSWORD) ->
         must_change = 0 if (user_3_dict.get("must_change_password") == 0 and current_email == target_username) else 1
         pw_hash = user_3["password"] if must_change == 0 else hash_password(initial_password)
 
+        u3_id = user_3["id"]
         conn.execute("""
             UPDATE users
             SET email = ?, password = ?, must_change_password = ?, is_verified = 1, status = 'ACTIVE'
-            WHERE id = 3
-        """, (target_username, pw_hash, must_change))
+            WHERE id = ?
+        """, (target_username, pw_hash, must_change, u3_id))
 
         if hp3:
             conn.execute("""
@@ -126,18 +136,24 @@ def provision_all_hospitals(initial_password: str = DEFAULT_INITIAL_PASSWORD) ->
                     taluk = 'Koppa',
                     must_change_password = ?,
                     updated_at = ?
-                WHERE hospital_user_id = 3
-            """, (contact_email, must_change, now_iso))
+                WHERE hospital_user_id = ?
+            """, (contact_email, must_change, now_iso, u3_id))
         else:
             conn.execute("""
                 INSERT INTO hospital_profiles
                 (hospital_user_id, hospital_name, address, district, taluk, latitude, longitude, contact_email, must_change_password, created_at, updated_at)
-                VALUES (3, 'General Hospital Koppa', 'Hospital Road, Koppa, Chikmagalur - 577126', 'Chikkamagaluru', 'Koppa', 13.5333, 75.3667, ?, ?, ?, ?)
-            """, (contact_email, must_change, now_iso, now_iso))
-        results["migrated"].append({"id": 3, "username": target_username, "contact_email": contact_email})
+                VALUES (?, 'General Hospital Koppa', 'Hospital Road, Koppa, Chikmagalur - 577126', 'Chikkamagaluru', 'Koppa', 13.5333, 75.3667, ?, ?, ?, ?)
+            """, (u3_id, contact_email, must_change, now_iso, now_iso))
+        results["migrated"].append({"id": u3_id, "username": target_username, "contact_email": contact_email})
 
     # 2. Migrate User ID 16 (Koppa Nr Pura)
-    user_16 = conn.execute("SELECT * FROM users WHERE id = 16").fetchone()
+    user_16 = conn.execute("""
+        SELECT * FROM users
+        WHERE LOWER(email) = 'venka.naibhi@gmail.com'
+           OR LOWER(email) = 'koppa_nrpura@haemopulse.in'
+           OR (id = 16 AND role = 'ROLE_HOSPITAL')
+        LIMIT 1
+    """).fetchone()
     if user_16:
         target_username = "koppa_nrpura@haemopulse.in"
         current_email = user_16["email"]
@@ -153,11 +169,12 @@ def provision_all_hospitals(initial_password: str = DEFAULT_INITIAL_PASSWORD) ->
         must_change = 0 if (user_16_dict.get("must_change_password") == 0 and current_email == target_username) else 1
         pw_hash = user_16["password"] if must_change == 0 else hash_password(initial_password)
 
+        u16_id = user_16["id"]
         conn.execute("""
             UPDATE users
             SET email = ?, password = ?, must_change_password = ?, is_verified = 1, status = 'ACTIVE'
-            WHERE id = 16
-        """, (target_username, pw_hash, must_change))
+            WHERE id = ?
+        """, (target_username, pw_hash, must_change, u16_id))
 
         if hp16:
             conn.execute("""
@@ -165,9 +182,9 @@ def provision_all_hospitals(initial_password: str = DEFAULT_INITIAL_PASSWORD) ->
                 SET contact_email = ?,
                     must_change_password = ?,
                     updated_at = ?
-                WHERE hospital_user_id = 16
-            """, (contact_email, must_change, now_iso))
-        results["migrated"].append({"id": 16, "username": target_username, "contact_email": contact_email})
+                WHERE hospital_user_id = ?
+            """, (contact_email, must_change, now_iso, u16_id))
+        results["migrated"].append({"id": u16_id, "username": target_username, "contact_email": contact_email})
 
     # 3. Load Karnataka Government Hospitals JSON
     json_path = BACKEND_DIR / "karnataka_government_hospitals.json"
@@ -216,14 +233,27 @@ def provision_all_hospitals(initial_password: str = DEFAULT_INITIAL_PASSWORD) ->
                 ))
                 results["provisioned"].append({"name": h_name, "username": username, "id": u_id})
 
-    conn.commit()
+    if dry_run:
+        conn.rollback()
+        results["dry_run"] = True
+    else:
+        conn.commit()
+        results["dry_run"] = False
+
+    if close_conn:
+        conn.close()
+
     return results
 
 
 if __name__ == "__main__":
-    print(f"Running HaemoPulse Hospital Account Provisioning (initial password default: '{DEFAULT_INITIAL_PASSWORD}')...")
-    summary = provision_all_hospitals()
+    is_dry_run = "--dry-run" in sys.argv
+    mode_label = "[DRY-RUN PREVIEW (no changes committed)]" if is_dry_run else "[PRODUCTION COMMIT]"
+    print(f"Running HaemoPulse Hospital Account Provisioning {mode_label}...")
+    print(f"Initial password default: '{DEFAULT_INITIAL_PASSWORD}'")
+    summary = provision_all_hospitals(dry_run=is_dry_run)
     print("Provisioning complete!")
+    print(f"Dry run: {summary.get('dry_run', False)}")
     print(f"Migrated accounts ({len(summary['migrated'])}): {summary['migrated']}")
     print(f"Newly provisioned ({len(summary['provisioned'])}): {summary['provisioned']}")
     print(f"Unchanged existing ({len(summary['unchanged'])}): {summary['unchanged']}")
