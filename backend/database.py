@@ -271,6 +271,7 @@ CREATE INDEX IF NOT EXISTS idx_donation_history_status ON donation_history(statu
 CREATE INDEX IF NOT EXISTS idx_donation_history_date ON donation_history(donation_date DESC);
 CREATE INDEX IF NOT EXISTS idx_donation_history_synthetic ON donation_history(is_synthetic);
 CREATE INDEX IF NOT EXISTS idx_donation_history_cert ON donation_history(UPPER(certificate_code));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_active_appointment_donor_email ON appointments (LOWER(TRIM(donor_email))) WHERE UPPER(TRIM(status)) IN ('SCHEDULED', 'PENDING', 'CONFIRMED', 'APPROVED');
 """
 
 
@@ -455,6 +456,14 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE blood_requests ADD COLUMN units_fulfilled INTEGER DEFAULT 0")
         if cols and "fulfilled_at" not in cols:
             conn.execute("ALTER TABLE blood_requests ADD COLUMN fulfilled_at TEXT")
+    except Exception:
+        pass
+    try:
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_active_appointment_donor_email
+            ON appointments (LOWER(TRIM(donor_email)))
+            WHERE UPPER(TRIM(status)) IN ('SCHEDULED', 'PENDING', 'CONFIRMED', 'APPROVED')
+        """)
     except Exception:
         pass
     try:

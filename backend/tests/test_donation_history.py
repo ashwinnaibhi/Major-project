@@ -221,7 +221,7 @@ class DonationHistoryTestCase(unittest.TestCase):
     def test_02_hospital_records_donation_and_updates_state(self):
         """Verify hospital recording generates certificate, updates donor profile & inventory."""
         past_date = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%d")
-        
+
         # Hospital 1 records donation for Donor 1
         res = client.post(
             "/api/v1/hospitals/donations/record",
@@ -251,9 +251,10 @@ class DonationHistoryTestCase(unittest.TestCase):
         self.assertEqual(hist_data["total_donations"], 1)
         self.assertEqual(hist_data["records"][0]["certificate_code"], cert_code)
         self.assertEqual(hist_data["records"][0]["units"], 2)
-        # Donor is within recovery window (10 days < 90 days) -> ineligible
+        # Donor is within recovery window (3 calendar months) -> ineligible
         self.assertFalse(hist_data["is_eligible"])
-        self.assertEqual(hist_data["days_until_eligible"], 80)
+        self.assertTrue(hist_data["recovery_period_active"])
+        self.assertGreater(hist_data["days_until_eligible"], 0)
 
         # Check that Donor 2 does NOT see Donor 1's donation (Donor Isolation)
         d2_res = client.get("/api/v1/donations/my-history", headers={"Authorization": f"Bearer {self.donor2_token}"})

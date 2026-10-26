@@ -682,5 +682,35 @@ class AppointmentRecoveryPeriodTestCase(unittest.TestCase):
         self.assertEqual(count, 1, "Race condition prevention failed: multiple appointments were created!")
 
 
+    def test_donor_availability_score_and_history_3_calendar_months(self):
+        # Test that availability score and donation history reflect 3-calendar-month rule
+        # Donor B has a recent donation (10 days ago)
+        res_avail = client.get("/api/v1/donors/me/availability-score", headers={"Authorization": f"Bearer {self.token_b}"})
+        self.assertEqual(res_avail.status_code, 200)
+        data_avail = res_avail.json()
+        self.assertTrue(data_avail["eligible"])  # Score is valid and available to display
+        self.assertTrue(data_avail["recovery_period_active"])
+        self.assertEqual(data_avail["availability_status"], "LOW")
+        self.assertLessEqual(data_avail["availability_score"], 45.0)
+        self.assertIsNotNone(data_avail["earliest_eligible_date"])
+
+        # Test donor A (never donated)
+        res_avail_a = client.get("/api/v1/donors/me/availability-score", headers={"Authorization": f"Bearer {self.token_a}"})
+        self.assertEqual(res_avail_a.status_code, 200)
+        data_avail_a = res_avail_a.json()
+        self.assertTrue(data_avail_a["eligible"])
+        self.assertFalse(data_avail_a["recovery_period_active"])
+        self.assertEqual(data_avail_a["availability_status"], "HIGH")
+        self.assertGreaterEqual(data_avail_a["availability_score"], 75.0)
+
+        # Test my-history reflects 3-calendar-month rule
+        res_hist_b = client.get("/api/v1/donations/my-history", headers={"Authorization": f"Bearer {self.token_b}"})
+        self.assertEqual(res_hist_b.status_code, 200)
+        data_hist_b = res_hist_b.json()
+        self.assertTrue(data_hist_b["recovery_period_active"])
+        self.assertFalse(data_hist_b["is_eligible"])
+        self.assertGreater(data_hist_b["days_until_eligible"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

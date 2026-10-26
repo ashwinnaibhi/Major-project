@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { RECOVERY_PERIOD_MESSAGE, ACTIVE_APPOINTMENT_MESSAGE, ACTIVE_APPOINTMENT_STATUSES } from '../utils/recoveryPeriod';
+import { RECOVERY_PERIOD_MESSAGE, ACTIVE_APPOINTMENT_MESSAGE, ACTIVE_APPOINTMENT_STATUSES, calculateRecoveryEligibility, addThreeCalendarMonths } from '../utils/recoveryPeriod';
 
 import { getApiBaseUrl } from '../api/config';
 const API_BASE = getApiBaseUrl();
@@ -232,9 +232,22 @@ export default function DonorDashboard({
         setAppointmentError('');
         setAvailabilityPrediction({ status: 'loading', data: null, message: '' });
         fetch(`${API_BASE}/api/v1/donors/me/availability-score`, { headers: { Authorization: `Bearer ${currentUser.token}` } })
-          .then(async (response) => { const result = await response.json().catch(() => ({})); if (!response.ok) throw new Error(result.detail || 'Availability prediction is unavailable.'); return result; })
-          .then((result) => { if (cancelled) return; setAvailabilityPrediction(result.eligible ? { status: 'success', data: result, message: '' } : { status: 'ineligible', data: result, message: result.completed_donations == null ? (result.message || 'Verified donation history is not recorded yet.') : `${result.message || 'Your personalized availability score is not available yet.'} (${result.completed_donations} verified completed donations recorded.)` }); })
-          .catch((error) => { if (!cancelled) setAvailabilityPrediction({ status: 'error', data: null, message: error.message || 'Availability prediction is currently unavailable.' }); });
+          .then(async (response) => {
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(result.detail || 'Availability prediction is unavailable.');
+            return result;
+          })
+          .then((result) => {
+            if (cancelled) return;
+            setAvailabilityPrediction({
+              status: result.availability_score != null ? 'success' : 'ineligible',
+              data: result,
+              message: result.message || ''
+            });
+          })
+          .catch((error) => {
+            if (!cancelled) setAvailabilityPrediction({ status: 'error', data: null, message: error.message || 'Availability prediction is currently unavailable.' });
+          });
       })
       .catch((error) => { if (!cancelled) { setProfileLoadError(error.message || 'Unable to retrieve your profile.'); setAppointmentError(error.message || 'Unable to retrieve appointments.'); setAvailabilityPrediction({ status: 'error', data: null, message: 'Donor information could not be verified for an availability prediction.' }); } })
       .finally(() => { if (!cancelled) setProfileLoading(false); });
@@ -249,18 +262,31 @@ export default function DonorDashboard({
     }
   }, [resendCooldown]);
 
-  // Eligibility calculation: Male = 90 days, Female = 120 days
-  const requiredGap = (donorDetails.gender || 'Male').toLowerCase() === 'female' ? 120 : 90;
+  // 3-Calendar-Month Recovery Period Calculation (replacing legacy 90-day fixed interval)
+  const recoveryInfo = calculateRecoveryEligibility(
+    bookingEligibility?.last_donation_date || donorDetails.last_donation_date
+  );
+  const earliestEligibleDate = bookingEligibility?.earliest_eligible_date || donorDetails.earliest_eligible_date || recoveryInfo.earliestEligibleDate;
+  const isRecoveryActive = bookingEligibility?.recovery_period_active !== undefined
+    ? Boolean(bookingEligibility.recovery_period_active)
+    : donorDetails.recovery_period_active !== undefined
+    ? Boolean(donorDetails.recovery_period_active)
+    : recoveryInfo.recoveryPeriodActive;
+  const isEligible = !isRecoveryActive;
+
+  // Calculate remaining recovery days from earliestEligibleDate
+  let daysRemaining = null;
+  if (isRecoveryActive && earliestEligibleDate) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const target = new Date(earliestEligibleDate);
+    target.setHours(0, 0, 0, 0);
+    const diffMs = target.getTime() - today.getTime();
+    daysRemaining = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+  }
+
   const daysSinceLast = donorDetails.last_donation_days == null ? null : Number(donorDetails.last_donation_days);
-  const hasDonationInterval = Number.isFinite(daysSinceLast);
-  const isEligible = hasDonationInterval && daysSinceLast >= requiredGap;
-  const daysRemaining = hasDonationInterval ? Math.max(0, requiredGap - daysSinceLast) : null;
-
   const nextAppointment = getNextUpcomingAppointment(appointments);
-
-  // Next eligible date calculation
-  const nextEligibleDate = new Date();
-  if (!isEligible && daysRemaining !== null) nextEligibleDate.setDate(nextEligibleDate.getDate() + daysRemaining);
 
   // Toggle availability only after the backend confirms persistence.
   const handleToggleAvailability = async () => {
@@ -768,8 +794,8 @@ export default function DonorDashboard({
                     onChange={(e) => setFormData({ ...formData, gender: e.target.value })}
                     className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none"
                   >
-                    <option value="Male">Male (90d gap)</option>
-                    <option value="Female">Female (120d gap)</option>
+                    <option value="Male">Male</option>
+                    <option value="Female">Female</option>
                     <option value="Other">Other</option>
                   </select>
                 </div>
@@ -969,7 +995,20 @@ export default function DonorDashboard({
             </button>
           </div>
 
-          {availabilityPrediction.status === 'success' ? <MLPredictionBadge category={availabilityPrediction.data.availability_status} score={availabilityPrediction.data.availability_score} /> : <span className="text-xs text-slate-400">{availabilityPrediction.status === 'loading' ? 'Calculating availability…' : availabilityPrediction.status === 'error' ? 'Availability score unavailable' : availabilityPrediction.status === 'ineligible' ? 'Personalized score not available yet' : 'Availability score not calculated'}</span>}
+          {(availabilityPrediction.data?.availability_score != null || donorDetails.availability_score != null) ? (
+            <MLPredictionBadge
+              category={availabilityPrediction.data?.availability_status || donorDetails.availability_status || 'HIGH'}
+              score={availabilityPrediction.data?.availability_score ?? donorDetails.availability_score}
+            />
+          ) : (
+            <span className="text-xs text-slate-400">
+              {availabilityPrediction.status === 'loading'
+                ? 'Calculating availability…'
+                : availabilityPrediction.status === 'error'
+                ? 'Availability score unavailable'
+                : 'Availability score not calculated'}
+            </span>
+          )}
 
           {onLogout && (
             <button
@@ -988,7 +1027,7 @@ export default function DonorDashboard({
         <StatCard
           title="Last Donation Date"
           value={donorDetails.last_donation_date || 'Not recorded'}
-          subtitle={daysSinceLast == null ? 'Donation interval not available' : `${daysSinceLast} days ago`}
+          subtitle={daysSinceLast == null ? 'No completed donations recorded' : `${daysSinceLast} days ago`}
           icon={Clock}
           color="blood"
         />
@@ -1001,19 +1040,39 @@ export default function DonorDashboard({
         />
         <StatCard
           title="Donation Interval Status"
-          value={daysSinceLast == null ? 'Interval Unrecorded' : isEligible ? 'Interval Satisfied' : 'Recovery Period'}
+          value={
+            !donorDetails.last_donation_date
+              ? 'Interval Unrecorded'
+              : isEligible
+              ? 'Interval Satisfied'
+              : 'Recovery Period'
+          }
           subtitle={
-            isEligible
-              ? `${requiredGap}-day gap met; subject to on-site clinical & Hb screening`
-              : daysRemaining == null ? 'Donation history not recorded' : `Interval active: ${daysRemaining} days remaining (${nextEligibleDate.toISOString().slice(0, 10)})`
+            !donorDetails.last_donation_date
+              ? 'No previous completed donations recorded'
+              : isEligible
+              ? '3-calendar-month recovery period satisfied; subject to on-site screening'
+              : `Interval active: ${daysRemaining != null ? `${daysRemaining} days remaining` : 'Recovery active'} (${earliestEligibleDate})`
           }
           icon={CalendarCheck}
           color={isEligible ? 'emerald' : 'amber'}
         />
         <StatCard
           title="My Availability Score"
-          value={availabilityPrediction.status === 'success' ? `${availabilityPrediction.data.availability_score}%` : '—'}
-          subtitle={availabilityPrediction.status === 'success' ? `${availabilityPrediction.data.availability_status} Availability Tier` : availabilityPrediction.message || (availabilityPrediction.status === 'loading' ? 'Requesting the ML service…' : 'Personalized score requires 3 verified completed donations')}
+          value={
+            availabilityPrediction.data?.availability_score != null
+              ? `${availabilityPrediction.data.availability_score}%`
+              : donorDetails.availability_score != null
+              ? `${donorDetails.availability_score}%`
+              : 'Unavailable'
+          }
+          subtitle={
+            availabilityPrediction.data?.availability_status
+              ? `${availabilityPrediction.data.availability_status} Availability Tier${availabilityPrediction.data.recovery_period_active ? ' (In Recovery)' : ''}`
+              : donorDetails.availability_status
+              ? `${donorDetails.availability_status} Availability Tier`
+              : availabilityPrediction.message || 'Availability score calculated'
+          }
           icon={Award}
           color="blue"
         />

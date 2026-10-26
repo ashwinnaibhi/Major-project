@@ -941,13 +941,33 @@ def get_my_donor_profile(user: dict = Depends(get_current_user),
         (user["email"],)
     ).fetchall()
 
+    # Authoritative completed donation and recovery calculation
+    latest_completed = get_donor_latest_completed_donation(conn, user, donor)
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    authoritative_last_donation_date = None
+    authoritative_last_days = None
+    recovery_period_active = False
+    earliest_eligible_date_str = None
+
+    if latest_completed:
+        authoritative_last_donation_date = latest_completed.isoformat()
+        authoritative_last_days = (today - latest_completed).days
+        earliest_dt = add_three_calendar_months(latest_completed)
+        earliest_eligible_date_str = earliest_dt.isoformat()
+        recovery_period_active = today < earliest_dt
+
+    total_completed_count = len(donations) if donations else (donor.get("total_donations", 0) or 0)
+
     stats = {
-        "total_donations": donor.get("total_donations", 0),
-        "last_donation_days": donor.get("last_donation_days"),
-        "last_donation_date": donor.get("last_donation_date"),
+        "total_donations": max(donor.get("total_donations", 0) or 0, total_completed_count),
+        "last_donation_days": authoritative_last_days if authoritative_last_days is not None else donor.get("last_donation_days"),
+        "last_donation_date": authoritative_last_donation_date or donor.get("last_donation_date"),
+        "earliest_eligible_date": earliest_eligible_date_str,
+        "recovery_period_active": recovery_period_active,
+        "interval_eligible": not recovery_period_active,
         "availability_score": donor.get("availability_score"),
-        "availability_status": donor.get("availability_status"),
-        "is_available": bool(donor.get("is_available", 0)),
+        "availability_status": donor.get("availability_status") or ("LOW" if recovery_period_active else "HIGH"),
+        "is_available": False if recovery_period_active else bool(donor.get("is_available", 0)),
     }
 
     return {
@@ -1005,7 +1025,7 @@ def update_donor_profile(payload: DonorProfileUpdate,
 
 @app.get("/api/v1/donors/me/availability-score")
 def get_availability_score(user: dict = Depends(get_current_user),
-                           conn: sqlite3.Connection = Depends(get_db)):
+                           conn: Any = Depends(get_db)):
     if user["role"] != "ROLE_DONOR":
         raise HTTPException(status_code=403, detail="Donor access only")
     donor = conn.execute(
@@ -1017,22 +1037,54 @@ def get_availability_score(user: dict = Depends(get_current_user),
 
     donor = dict(donor)
     total = donor.get("total_donations", 0) or 0
-    score = donor.get("availability_score") or 0.0
-    last_days = donor.get("last_donation_days")
-    gender = donor.get("gender", "Male") or "Male"
-    gap = 120 if gender.lower() == "female" else 90
+    raw_score = donor.get("availability_score")
+    if raw_score is None:
+        raw_score = 85.0
+    else:
+        try:
+            raw_score = float(raw_score)
+        except Exception:
+            raw_score = 85.0
 
-    eligible = total > 0 and (last_days is None or last_days >= gap)
+    raw_status = donor.get("availability_status") or "HIGH"
+
+    latest_date = get_donor_latest_completed_donation(conn, user, donor)
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    recovery_period_active = False
+    earliest_eligible_date_str = None
+    last_donation_date_str = None
+    last_days = None
+
+    if latest_date:
+        last_donation_date_str = latest_date.isoformat()
+        last_days = (today - latest_date).days
+        earliest_dt = add_three_calendar_months(latest_date)
+        earliest_eligible_date_str = earliest_dt.isoformat()
+        recovery_period_active = today < earliest_dt
+
+    if recovery_period_active:
+        score = min(raw_score, 45.0)
+        status_tier = "LOW"
+        is_avail = False
+        remaining_days = max(0, (earliest_dt - today).days)
+        msg = f"In 3-calendar-month recovery period until {earliest_eligible_date_str} ({remaining_days} days remaining)."
+    else:
+        score = max(raw_score, 75.0) if total > 0 else raw_score
+        status_tier = raw_status if raw_status in ("HIGH", "MEDIUM", "LOW") else "HIGH"
+        is_avail = bool(donor.get("is_available", 1))
+        msg = "Availability score ready."
+
     return {
-        "eligible": eligible,
-        "availability_score": score,
-        "availability_status": donor.get("availability_status", "UNKNOWN"),
+        "eligible": True,
+        "availability_score": round(score, 1),
+        "availability_status": status_tier,
+        "is_available": is_avail,
         "completed_donations": total,
         "last_donation_days": last_days,
-        "message": (
-            "Availability score ready." if eligible
-            else f"Minimum {gap} days since last donation required."
-        ),
+        "last_donation_date": last_donation_date_str,
+        "earliest_eligible_date": earliest_eligible_date_str,
+        "recovery_period_active": recovery_period_active,
+        "message": msg,
     }
 
 
@@ -2131,16 +2183,38 @@ def book_appointment(payload: AppointmentPayload,
 
         now = datetime.datetime.utcnow().isoformat(sep=" ", timespec="seconds")
 
-        conn.execute(
-            """INSERT INTO appointments
-                 (donor_id, donor_name, donor_email, blood_group, appointment_date, time_slot, center_name, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?)""",
-            (donor.get("donor_id", ""), donor.get("name", user["name"]),
-             user["email"], donor.get("blood_group", ""),
-             payload.appointment_date, payload.time_slot,
-             payload.center_name or "Central Blood Bank Hub #1", now),
-        )
-        conn.commit()
+        try:
+            conn.execute(
+                """INSERT INTO appointments
+                     (donor_id, donor_name, donor_email, blood_group, appointment_date, time_slot, center_name, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?)""",
+                (donor.get("donor_id", ""), donor.get("name", user["name"]),
+                 user["email"], donor.get("blood_group", ""),
+                 payload.appointment_date, payload.time_slot,
+                 payload.center_name or "Central Blood Bank Hub #1", now),
+            )
+            conn.commit()
+        except Exception as exc:
+            err_msg = str(exc).lower()
+            if "idx_active_appointment" in err_msg or "unique" in err_msg or "integrity" in err_msg:
+                active_row = conn.execute("""
+                    SELECT id, donor_id, donor_name, donor_email, blood_group, appointment_date, time_slot, center_name, status, created_at
+                    FROM appointments
+                    WHERE (LOWER(TRIM(donor_email)) = LOWER(TRIM(?))
+                           OR (donor_id IS NOT NULL AND donor_id != '' AND donor_id = ?))
+                      AND UPPER(TRIM(status)) IN ('SCHEDULED', 'PENDING', 'CONFIRMED', 'APPROVED')
+                    ORDER BY appointment_date ASC, id ASC
+                    LIMIT 1
+                """, (user["email"], donor.get("donor_id", ""))).fetchone()
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error_code": "ACTIVE_APPOINTMENT_EXISTS",
+                        "message": ACTIVE_APPOINTMENT_MESSAGE,
+                        "active_appointment": dict(active_row) if active_row else None
+                    }
+                )
+            raise
 
     return {"message": "Appointment booked successfully.", "status": "SCHEDULED"}
 
@@ -2264,37 +2338,26 @@ def get_my_donation_history(user: dict = Depends(get_current_user),
 
     records = [dict(r) for r in rows]
 
-    # Calculate eligibility
+    # Calculate eligibility using authoritative completed donations & 3-calendar-month rule
     total_donations = len(records)
-    last_donation_date = records[0]["donation_date"] if records else (donor.get("last_donation_date") if donor else None)
-
-    last_days = None
-    is_eligible = True
-    days_until_eligible = 0
-    gender = donor.get("gender", "Male") if donor else "Male"
-    gap = 120 if str(gender).strip().lower() == "female" else 90
-
-    if last_donation_date:
-        try:
-            d_date = datetime.date.fromisoformat(last_donation_date[:10])
-            today = datetime.datetime.utcnow().date()
-            last_days = (today - d_date).days
-            if last_days < gap:
-                is_eligible = False
-                days_until_eligible = max(0, gap - last_days)
-        except Exception:
-            pass
-
-    # 3-calendar-month recovery period calculation
+    latest_completed = get_donor_latest_completed_donation(conn, user, donor)
+    today = datetime.datetime.now(datetime.timezone.utc).date()
     earliest_eligible_date = None
     recovery_period_active = False
-    if last_donation_date:
-        d_date = parse_date_safe(last_donation_date)
-        if d_date:
-            earliest_dt = add_three_calendar_months(d_date)
-            earliest_eligible_date = earliest_dt.isoformat()
-            today = datetime.datetime.now(datetime.timezone.utc).date()
-            recovery_period_active = today < earliest_dt
+    days_until_eligible = 0
+    last_days = None
+    last_donation_date = None
+
+    if latest_completed:
+        last_donation_date = latest_completed.isoformat()
+        last_days = (today - latest_completed).days
+        earliest_dt = add_three_calendar_months(latest_completed)
+        earliest_eligible_date = earliest_dt.isoformat()
+        recovery_period_active = today < earliest_dt
+        if recovery_period_active:
+            days_until_eligible = max(0, (earliest_dt - today).days)
+
+    is_eligible = not recovery_period_active
 
     return {
         "records": records,
@@ -2302,15 +2365,14 @@ def get_my_donation_history(user: dict = Depends(get_current_user),
         "last_donation_date": last_donation_date,
         "last_donation_days": last_days,
         "interval_eligible": is_eligible,
-        "is_eligible": is_eligible and not recovery_period_active,
+        "is_eligible": is_eligible,
         "recovery_period_active": recovery_period_active,
         "earliest_eligible_date": earliest_eligible_date,
         "days_until_eligible": days_until_eligible,
-        "required_gap_days": gap,
         "eligibility_disclaimer": (
             "Minimum donation interval satisfied. Definitive medical eligibility is determined on-site following mandatory hemoglobin and health screening."
-            if (is_eligible and not recovery_period_active) else
-            (f"Blood Donation Recovery Period: You are not eligible to donate blood yet. Next eligible date: {earliest_eligible_date}." if recovery_period_active else f"Minimum {gap}-day clinical recovery interval active ({days_until_eligible} days remaining until next eligible donation attempt).")
+            if is_eligible else
+            f"Blood Donation Recovery Period active: You must wait until {earliest_eligible_date} ({days_until_eligible} days remaining) before your next donation attempt."
         )
     }
 
