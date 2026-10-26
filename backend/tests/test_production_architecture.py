@@ -200,5 +200,48 @@ class ProductionArchitectureTestCase(unittest.TestCase):
         import migrate_to_postgres
         self.assertEqual(len(migrate_to_postgres.MIGRATION_TABLES), 14)
 
+    def test_11_health_endpoint_preserves_status_and_reports_commit_sha(self):
+        """Verify /health preserves status='ok', reports version, and returns commit_sha."""
+        from fastapi.testclient import TestClient
+        import server
+        client = TestClient(server.app)
+
+        res = client.get("/health")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data.get("status"), "ok")
+        self.assertEqual(data.get("version"), "3.0.0")
+        self.assertIn("commit_sha", data)
+        self.assertTrue(len(data["commit_sha"]) > 0)
+
+    def test_12_health_endpoint_reads_render_git_commit_env(self):
+        """Verify /health reflects the RENDER_GIT_COMMIT environment variable."""
+        from fastapi.testclient import TestClient
+        import server
+        client = TestClient(server.app)
+
+        mock_sha = "d41d8cd98f00b204e9800998ecf8427e12345678"
+        with patch.dict(os.environ, {"RENDER_GIT_COMMIT": mock_sha}):
+            res = client.get("/health")
+            self.assertEqual(res.status_code, 200)
+            data = res.json()
+            self.assertEqual(data.get("status"), "ok")
+            self.assertEqual(data.get("commit_sha"), mock_sha)
+
+    def test_13_root_endpoint_reports_service_status_and_commit_sha(self):
+        """Verify root / endpoint preserves service, version, status, and exposes commit_sha."""
+        from fastapi.testclient import TestClient
+        import server
+        client = TestClient(server.app)
+
+        res = client.get("/")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data.get("service"), "HaemoPulse Blood Bank API")
+        self.assertEqual(data.get("status"), "healthy")
+        self.assertEqual(data.get("version"), "3.0.0")
+        self.assertIn("commit_sha", data)
+
+
 if __name__ == "__main__":
     unittest.main()

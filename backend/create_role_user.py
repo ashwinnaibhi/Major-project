@@ -1,7 +1,7 @@
 """Create an authorized non-donor account for a HaemoPulse installation.
 
 Supports both interactive CLI mode and scriptable arguments:
-    python create_role_user.py --role ADMIN --name "Admin" --email "admin@haemopulse.org" --password "SecurePassword123!"
+    python create_role_user.py --role ADMIN --name "System Admin" --email "admin@haemopulse.in" --password "SecurePassword123!"
 
 Works transparently with the configured database (SQLite or PostgreSQL via DATABASE_URL).
 """

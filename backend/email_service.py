@@ -1243,9 +1243,28 @@ def send_verification_resend_api(*, recipient_email: str, recipient_name: str, r
         }
 
 
+def is_synthetic_login_identity(email: str) -> bool:
+    """Returns True if the email address is an internal synthetic login identifier (@haemopulse.in),
+    which is not a real deliverable email inbox unless explicitly allowlisted.
+    """
+    clean = (email or "").strip().lower()
+    if clean.endswith("@haemopulse.in"):
+        allowed = os.getenv("HAEMOPULSE_DELIVERABLE_DOMAINS", "").lower().split(",")
+        return "haemopulse.in" not in [d.strip() for d in allowed if d.strip()]
+    return False
+
+
 def send_verification_email(*, recipient_email: str, recipient_name: str, raw_token: str,
                             timeout_seconds: int = 12) -> dict:
     """Master email dispatcher: routes to HTTPS API (Brevo / Resend) in cloud hosting, or SMTP locally."""
+    if is_synthetic_login_identity(recipient_email):
+        return {
+            "sent": False,
+            "status": "DISABLED",
+            "error_type": "SYNTHETIC_LOGIN_IDENTITY",
+            "reason": "SYNTHETIC_LOGIN_IDENTITY",
+            "message": "Login identities ending in @haemopulse.in are synthetic identifiers and cannot receive transactional emails."
+        }
     load_haemopulse_env()
     method = os.getenv("EMAIL_DELIVERY_METHOD", "").strip().lower()
 
@@ -1269,6 +1288,8 @@ def send_transactional_email(*, recipient_email: str, recipient_name: str, subje
                              text_content: str, html_content: str,
                              timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> SubmissionResult:
     """Submit one transactional email to Brevo. This is used for emergency notifications."""
+    if is_synthetic_login_identity(recipient_email):
+        return SubmissionResult("DISABLED", error_code="SYNTHETIC_LOGIN_IDENTITY")
     if not external_messages_enabled():
         return SubmissionResult("DISABLED", error_code="EXTERNAL_MESSAGES_DISABLED")
     email_mode = os.getenv("HAEMOPULSE_EMAIL_MODE", "mock").strip().lower()

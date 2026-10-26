@@ -80,13 +80,13 @@ test('processAdminLoginResponse creates correct session for genuine admin', () =
     message: 'Login successful',
     token: 'jwt.adm.secret',
     role: 'ROLE_ADMIN',
-    user: { id: 10, email: 'admin@haemopulse.org', role: 'ROLE_ADMIN', name: 'Master Admin' }
+    user: { id: 10, email: 'admin@haemopulse.in', role: 'ROLE_ADMIN', name: 'Master Admin' }
   };
   const session = processAdminLoginResponse(adminPayload);
   assert.equal(session.role, 'ADMIN');
   assert.equal(session.isLoggedIn, true);
   assert.equal(session.token, 'jwt.adm.secret');
-  assert.equal(session.email, 'admin@haemopulse.org');
+  assert.equal(session.email, 'admin@haemopulse.in');
 });
 
 test('resolveSessionVerification flags invalid and expired sessions for removal', () => {

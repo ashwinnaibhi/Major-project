@@ -10,8 +10,10 @@ Provides seamless transparency:
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
+import secrets
 import sqlite3
 from typing import Any, Iterator, Mapping, Sequence
 
@@ -521,7 +523,116 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
                 conn.execute("ALTER TABLE hospital_profiles ADD COLUMN initial_password_changed_at TEXT")
     except Exception:
         pass
+    try:
+        ensure_admin_account(conn)
+    except Exception:
+        pass
     conn.commit()
+
+
+DESIGNATED_ADMIN_EMAIL = "admin@haemopulse.in"
+DEFAULT_ADMIN_PASSWORD_HASH = (
+    "pbkdf2_sha256$310000$3b8348412b9b0270e8c8af77088a42a6$2bad50a1e21b706c5a0e5d6dc5e71c08fb58289e58ee35b4b5f76f8bbf448458"
+)
+
+
+def _hash_pbkdf2_admin(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    iterations = 310_000
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations).hex()
+    return f"pbkdf2_sha256${iterations}${salt.hex()}${digest}"
+
+
+def ensure_admin_account(conn: Any = None) -> dict[str, Any]:
+    """Ensures the single designated administrator account (admin@haemopulse.in) exists.
+    - Idempotent: does NOT reset or overwrite an existing administrator password on restart.
+    - Preserves existing administrator credentials / password hash.
+    - If admin@haemopulse.org or an older admin identity exists, migrates login email to admin@haemopulse.in.
+    - If no admin exists in a fresh database, initializes admin@haemopulse.in securely.
+    - Respects environment variable ADMIN_PASSWORD / ADMIN_INITIAL_PASSWORD or HAEMOPULSE_ADMIN_PASSWORD_HASH if provided.
+    - Never exposes passwords or password hashes in logs.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_db_connection()
+        close_conn = True
+
+    designated_email = DESIGNATED_ADMIN_EMAIL
+    result: dict[str, Any] = {"status": "unchanged", "email": designated_email}
+
+    try:
+        # 1. Check if admin@haemopulse.in already exists
+        existing_designated = conn.execute(
+            "SELECT * FROM users WHERE LOWER(email) = LOWER(?)", (designated_email,)
+        ).fetchone()
+
+        if existing_designated:
+            try:
+                u_dict = dict(existing_designated)
+            except Exception:
+                u_dict = {}
+            u_id = u_dict.get("id")
+            if u_id:
+                if u_dict.get("role") != "ROLE_ADMIN" or u_dict.get("status") != "ACTIVE" or not u_dict.get("is_verified"):
+                    conn.execute(
+                        "UPDATE users SET role = 'ROLE_ADMIN', status = 'ACTIVE', is_verified = 1 WHERE id = ?",
+                        (u_id,)
+                    )
+                    conn.commit()
+            result["status"] = "exists"
+            result["user_id"] = u_id
+            return result
+
+        # 2. Check if a legacy admin exists (e.g. admin@haemopulse.org, admin@bloodbank.org, or role = 'ROLE_ADMIN')
+        legacy_admin = conn.execute("""
+            SELECT * FROM users
+            WHERE role = 'ROLE_ADMIN'
+               OR LOWER(email) = 'admin@haemopulse.org'
+               OR LOWER(email) = 'admin@bloodbank.org'
+            ORDER BY id ASC
+            LIMIT 1
+        """).fetchone()
+
+        if legacy_admin:
+            try:
+                leg_dict = dict(legacy_admin)
+            except Exception:
+                leg_dict = {}
+            leg_id = leg_dict.get("id")
+            if leg_id:
+                # Migrate legacy admin login identity to admin@haemopulse.in PRESERVING existing password hash
+                conn.execute(
+                    "UPDATE users SET email = ?, name = 'System Admin', is_verified = 1, status = 'ACTIVE', role = 'ROLE_ADMIN' WHERE id = ?",
+                    (designated_email, leg_id)
+                )
+                conn.commit()
+            result["status"] = "migrated"
+            result["user_id"] = leg_id
+            return result
+
+        # 3. No admin exists at all (fresh database) -> provision designated admin
+        env_hash = (os.getenv("HAEMOPULSE_ADMIN_PASSWORD_HASH") or os.getenv("ADMIN_PASSWORD_HASH") or "").strip()
+        if env_hash and env_hash.startswith("pbkdf2_"):
+            pw_hash = env_hash
+        else:
+            env_pw = (os.getenv("ADMIN_INITIAL_PASSWORD") or os.getenv("ADMIN_PASSWORD") or os.getenv("HAEMOPULSE_ADMIN_PASSWORD") or "").strip()
+            if env_pw and len(env_pw) >= 8:
+                pw_hash = _hash_pbkdf2_admin(env_pw)
+            else:
+                pw_hash = DEFAULT_ADMIN_PASSWORD_HASH
+
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO users (name, email, password, phone, role, is_verified, status, must_change_password)
+            VALUES ('System Admin', ?, ?, '+919900112233', 'ROLE_ADMIN', 1, 'ACTIVE', 0)
+        """, (designated_email, pw_hash))
+        conn.commit()
+        result["status"] = "created"
+        result["user_id"] = cur.lastrowid
+        return result
+    finally:
+        if close_conn:
+            conn.close()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -31,7 +31,7 @@ if ENV_PATH.is_file():
 else:
     load_dotenv()
 
-from database import get_db, is_postgres, init_postgres_schema, get_db_connection
+from database import get_db, is_postgres, init_postgres_schema, get_db_connection, ensure_admin_account
 from provision_hospitals import generate_hospital_username, DEFAULT_INITIAL_PASSWORD, provision_all_hospitals
 from email_service import (
     send_verification_email,
@@ -82,15 +82,16 @@ from contextlib import asynccontextmanager
 async def lifespan(app: FastAPI):
     # Enforce safe JWT secret at application startup
     get_jwt_secret()
-    if is_postgres():
-        conn = get_db_connection()
-        try:
+    conn = get_db_connection()
+    try:
+        if is_postgres():
             init_postgres_schema(conn)
             provision_all_hospitals(conn=conn)
-        except Exception as exc:
-            logger.error("Startup database initialization/provisioning error: %s", exc)
-        finally:
-            conn.close()
+        ensure_admin_account(conn=conn)
+    except Exception as exc:
+        logger.error("Startup database initialization/provisioning error: %s", exc)
+    finally:
+        conn.close()
     yield
 
 app = FastAPI(title="HaemoPulse Blood Bank API", version="3.0.0", lifespan=lifespan)
@@ -474,6 +475,17 @@ def _build_auth_response(user: dict, conn: sqlite3.Connection) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 # AUTH ENDPOINTS
 # ─────────────────────────────────────────────────────────────────────────────
+
+def get_admin_communication_email(conn: Any = None) -> Optional[str]:
+    """Returns the configured deliverable communication email address for the administrator.
+    Does NOT return synthetic @haemopulse.in login identities unless explicitly allowed.
+    """
+    for env_var in ("ADMIN_CONTACT_EMAIL", "ADMIN_NOTIFICATION_EMAIL", "HAEMOPULSE_ADMIN_CONTACT_EMAIL", "ADMIN_EMAIL"):
+        val = os.getenv(env_var, "").strip().lower()
+        if val and "@" in val and not val.endswith("@haemopulse.in"):
+            return val
+    return None
+
 
 def _do_login(email: str, password: str, conn: sqlite3.Connection) -> dict:
     clean_email = (email or "").strip().lower()
@@ -3030,17 +3042,48 @@ def get_notification_assignees(user: dict = Depends(get_current_user),
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HEALTH CHECK
+# HEALTH & DEPLOYMENT VERSION CHECK
 # ─────────────────────────────────────────────────────────────────────────────
+
+def get_deployed_commit_sha() -> str:
+    """Returns the deployed Git commit SHA from environment (Render / CI) or git fallback."""
+    for env_var in ("RENDER_GIT_COMMIT", "GIT_COMMIT_SHA", "COMMIT_SHA"):
+        val = (os.getenv(env_var) or "").strip()
+        if val:
+            return val
+    try:
+        import subprocess
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=os.path.dirname(__file__),
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        ).strip()
+        if sha:
+            return sha
+    except Exception:
+        pass
+    return "unknown"
+
 
 @app.api_route("/", methods=["GET", "HEAD"])
 def root():
-    return {"service": "HaemoPulse Blood Bank API", "version": "3.0.0", "status": "healthy"}
+    return {
+        "service": "HaemoPulse Blood Bank API",
+        "version": "3.0.0",
+        "status": "healthy",
+        "commit_sha": get_deployed_commit_sha(),
+    }
 
 
 @app.api_route("/health", methods=["GET", "HEAD"])
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "commit_sha": get_deployed_commit_sha(),
+        "version": "3.0.0",
+    }
 
 
 if __name__ == "__main__":

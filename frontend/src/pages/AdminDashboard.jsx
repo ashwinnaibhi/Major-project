@@ -240,11 +240,12 @@ export default function AdminDashboard({ onNavigate, donorsList = [], requestsLi
                 Administrator Email
               </label>
               <input
-                type="email"
+                type="text"
                 required
                 value={adminEmail}
                 onChange={(e) => setAdminEmail(e.target.value)}
-                placeholder="admin@haemopulse.org"
+                placeholder="admin@haemopulse.in"
+                autoComplete="username"
                 className="w-full bg-slate-900 border border-slate-700/80 text-white rounded-xl px-3.5 py-2.5 text-xs font-medium focus:border-blood-500 focus:ring-1 focus:ring-blood-500 outline-none transition"
               />
             </div>

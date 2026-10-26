@@ -1,0 +1,124 @@
+name: Build and Deploy HaemoPulse Backend
+
+on:
+  push:
+    branches:
+      - test_branch_2
+    paths:
+      - "backend/**"
+      - "render.yaml"
+      - ".github/workflows/deploy-backend.yml"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: haemopulse-backend-production
+  cancel-in-progress: false
+
+jobs:
+  test-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Run backend test suite
+        run: |
+          python -m unittest discover -s backend/tests -p "test_*.py"
+
+      - name: Trigger Render Backend Deployment
+        id: trigger_deploy
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+        run: |
+          if [ -n "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "::add-mask::$RENDER_DEPLOY_HOOK_URL"
+            echo "Triggering Render deployment via webhook deploy hook..."
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$RENDER_DEPLOY_HOOK_URL")
+            if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+              echo "Render deployment webhook triggered successfully (HTTP $HTTP_STATUS)."
+            else
+              echo "::error::Render deploy hook failed with HTTP $HTTP_STATUS"
+              exit 1
+            fi
+          elif [ -n "$RENDER_API_KEY" ] && [ -n "$RENDER_SERVICE_ID" ]; then
+            echo "::add-mask::$RENDER_API_KEY"
+            echo "Triggering Render deployment via Render API..."
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+              "https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              -H "Accept: application/json" \
+              -H "Content-Type: application/json")
+            if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+              echo "Render API deployment triggered successfully (HTTP $HTTP_STATUS)."
+            else
+              echo "::error::Render API deploy failed with HTTP $HTTP_STATUS"
+              exit 1
+            fi
+          else
+            echo "::error::Deployment secrets missing! Neither RENDER_DEPLOY_HOOK_URL nor (RENDER_API_KEY and RENDER_SERVICE_ID) is configured in GitHub Secrets."
+            echo "::error::Automated deployment cannot proceed. Add RENDER_DEPLOY_HOOK_URL to repository secrets."
+            exit 1
+          fi
+
+      - name: Verify Backend Deployment and Health
+        run: |
+          EXPECTED_SHA="${{ github.sha }}"
+          HEALTH_URL="https://haemopulse-backend.onrender.com/health"
+          echo "Expected Git commit SHA: $EXPECTED_SHA"
+          echo "Polling health endpoint: $HEALTH_URL"
+
+          MAX_ATTEMPTS=45
+          DELAY_SECONDS=10
+          DEPLOYED=false
+
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            echo "Health verification attempt $i of $MAX_ATTEMPTS..."
+
+            RESPONSE=$(curl -s --max-time 15 "$HEALTH_URL" || true)
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "$HEALTH_URL" || true)
+
+            if [ "$HTTP_STATUS" = "200" ]; then
+              DEPLOYED_SHA=$(echo "$RESPONSE" | python3 -c "import sys, json; data=json.load(sys.stdin) if sys.stdin else {}; print(data.get('commit_sha', ''))" 2>/dev/null || true)
+              echo "HTTP 200 received. Deployed commit_sha: '$DEPLOYED_SHA'"
+
+              if [ -n "$DEPLOYED_SHA" ] && [ "$DEPLOYED_SHA" != "unknown" ]; then
+                if [ "$DEPLOYED_SHA" = "$EXPECTED_SHA" ] || [[ "$EXPECTED_SHA" == "$DEPLOYED_SHA"* ]] || [[ "$DEPLOYED_SHA" == "$EXPECTED_SHA"* ]]; then
+                  echo "SUCCESS: Deployed commit matches expected commit $EXPECTED_SHA!"
+                  DEPLOYED=true
+                  break
+                else
+                  echo "Observed commit ($DEPLOYED_SHA) does not match expected ($EXPECTED_SHA). Waiting for Render build and deployment to complete..."
+                fi
+              else
+                echo "commit_sha not present or unknown in response. Waiting for newly deployed version..."
+              fi
+            else
+              echo "Received HTTP $HTTP_STATUS from $HEALTH_URL. Waiting ${DELAY_SECONDS}s..."
+            fi
+
+            sleep $DELAY_SECONDS
+          done
+
+          if [ "$DEPLOYED" != "true" ]; then
+            echo "::error::Deployment verification failed: Expected commit $EXPECTED_SHA did not become active on Render within $((MAX_ATTEMPTS * DELAY_SECONDS)) seconds."
+            exit 1
+          fi

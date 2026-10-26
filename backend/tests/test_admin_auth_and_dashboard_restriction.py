@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from unittest import mock
 import shutil
 import tempfile
 from pathlib import Path
@@ -50,15 +51,23 @@ class AdminAuthAndDashboardRestrictionTestCase(unittest.TestCase):
         cls.conn = database.get_db_connection()
 
         # 1. Provision Administrator
-        cls.admin_email = "test_sys_admin@haemopulse.org"
+        cls.admin_email = "admin@haemopulse.in"
         cls.admin_password = "SuperAdminPassword123!"
         hashed_admin_pw = create_role_user.hash_password(cls.admin_password)
-        c_adm = cls.conn.execute(
-            """INSERT INTO users (name, email, password, phone, role, status, is_verified)
-               VALUES ('Master Admin', ?, ?, '+919988770001', 'ROLE_ADMIN', 'ACTIVE', 1)""",
-            (cls.admin_email, hashed_admin_pw)
-        )
-        cls.admin_user_id = c_adm.lastrowid
+        existing_adm = cls.conn.execute("SELECT id FROM users WHERE LOWER(email) = LOWER(?)", (cls.admin_email,)).fetchone()
+        if existing_adm:
+            cls.conn.execute(
+                "UPDATE users SET password = ?, role = 'ROLE_ADMIN', status = 'ACTIVE', is_verified = 1 WHERE id = ?",
+                (hashed_admin_pw, existing_adm["id"])
+            )
+            cls.admin_user_id = existing_adm["id"]
+        else:
+            c_adm = cls.conn.execute(
+                """INSERT INTO users (name, email, password, phone, role, status, is_verified)
+                   VALUES ('System Admin', ?, ?, '+919988770001', 'ROLE_ADMIN', 'ACTIVE', 1)""",
+                (cls.admin_email, hashed_admin_pw)
+            )
+            cls.admin_user_id = c_adm.lastrowid
 
         # 2. Provision Donor
         cls.donor_email = "test_regular_donor@haemopulse.org"
@@ -291,6 +300,114 @@ class AdminAuthAndDashboardRestrictionTestCase(unittest.TestCase):
         l_new = client.post("/api/v1/auth/login", json={"email": new_admin_email, "password": updated_pw})
         self.assertEqual(l_new.status_code, 200)
         self.assertEqual(l_new.json()["role"], "ROLE_ADMIN")
+
+    def test_11_designated_admin_login_with_correct_credentials(self):
+        """Designated admin login identifier admin@haemopulse.in succeeds and yields ROLE_ADMIN."""
+        res = client.post(
+            "/api/v1/auth/login",
+            json={"email": "admin@haemopulse.in", "password": self.admin_password}
+        )
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["role"], "ROLE_ADMIN")
+        self.assertEqual(data["user"]["email"], "admin@haemopulse.in")
+
+        # Verify against admin endpoint
+        token = data["token"]
+        v_res = client.get("/api/v1/admin/verify", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(v_res.status_code, 200)
+        self.assertTrue(v_res.json()["authenticated"])
+
+    def test_12_ensure_admin_account_idempotent(self):
+        """ensure_admin_account is idempotent and never overwrites existing administrator password."""
+        conn = database.get_db_connection()
+        res = database.ensure_admin_account(conn)
+        self.assertIn(res["status"], ("exists", "unchanged"))
+        conn.close()
+
+        # Re-verify that login with the existing password continues to work
+        res_login = client.post(
+            "/api/v1/auth/login",
+            json={"email": "admin@haemopulse.in", "password": self.admin_password}
+        )
+        self.assertEqual(res_login.status_code, 200)
+
+    def test_13_ensure_admin_account_migrates_legacy_identity(self):
+        """ensure_admin_account migrates legacy admin@haemopulse.org while preserving its password hash."""
+        conn = database.get_db_connection()
+        # Clean any admin accounts to test clean legacy migration
+        conn.execute("DELETE FROM users WHERE role = 'ROLE_ADMIN' OR LOWER(email) LIKE '%admin%'")
+        test_pw = "LegacyPass789!"
+        test_pw_hash = create_role_user.hash_password(test_pw)
+        conn.execute("""
+            INSERT INTO users (name, email, password, phone, role, status, is_verified)
+            VALUES ('Legacy Admin', 'admin@haemopulse.org', ?, '+919900112233', 'ROLE_ADMIN', 'ACTIVE', 1)
+        """, (test_pw_hash,))
+        conn.commit()
+
+        # Run ensure_admin_account
+        migration_res = database.ensure_admin_account(conn)
+        self.assertEqual(migration_res["status"], "migrated")
+
+        # Confirm the new identity exists with the same password hash
+        migrated_row = conn.execute("SELECT * FROM users WHERE LOWER(email) = 'admin@haemopulse.in'").fetchone()
+        self.assertIsNotNone(migrated_row)
+        self.assertEqual(migrated_row["password"], test_pw_hash)
+        conn.close()
+
+        # Confirm login works with new identity admin@haemopulse.in and legacy password
+        res_login = client.post(
+            "/api/v1/auth/login",
+            json={"email": "admin@haemopulse.in", "password": test_pw}
+        )
+        self.assertEqual(res_login.status_code, 200)
+
+        # Restore original test admin password
+        conn = database.get_db_connection()
+        conn.execute(
+            "UPDATE users SET password = ? WHERE LOWER(email) = 'admin@haemopulse.in'",
+            (create_role_user.hash_password(self.admin_password),)
+        )
+        conn.commit()
+        conn.close()
+
+    def test_14_communication_email_separate_from_login_identity(self):
+        """Admin communication email is distinct from synthetic login identity admin@haemopulse.in."""
+        # When ADMIN_CONTACT_EMAIL is not set, safely returns None without fabricating an email
+        with mock.patch.dict(os.environ, {"ADMIN_CONTACT_EMAIL": ""}):
+            self.assertIsNone(server.get_admin_communication_email())
+
+        # When ADMIN_CONTACT_EMAIL is set to a real email address
+        with mock.patch.dict(os.environ, {"ADMIN_CONTACT_EMAIL": "real_admin@example.org"}):
+            self.assertEqual(server.get_admin_communication_email(), "real_admin@example.org")
+
+        # Never returns a synthetic @haemopulse.in domain as communication email
+        with mock.patch.dict(os.environ, {"ADMIN_CONTACT_EMAIL": "fake@haemopulse.in"}):
+            self.assertIsNone(server.get_admin_communication_email())
+
+    def test_15_synthetic_identity_email_dispatch_prevented(self):
+        """Transactional and verification emails to synthetic @haemopulse.in addresses are rejected."""
+        import email_service
+
+        # Transactional email
+        sub_result = email_service.send_transactional_email(
+            recipient_email="admin@haemopulse.in",
+            recipient_name="Admin",
+            subject="Test",
+            text_content="Test",
+            html_content="<p>Test</p>"
+        )
+        self.assertEqual(sub_result.status, "DISABLED")
+        self.assertEqual(sub_result.error_code, "SYNTHETIC_LOGIN_IDENTITY")
+
+        # Verification email
+        ver_result = email_service.send_verification_email(
+            recipient_email="admin@haemopulse.in",
+            recipient_name="Admin",
+            raw_token="token_123"
+        )
+        self.assertFalse(ver_result.get("sent"))
+        self.assertEqual(ver_result.get("reason"), "SYNTHETIC_LOGIN_IDENTITY")
 
 
 if __name__ == "__main__":
