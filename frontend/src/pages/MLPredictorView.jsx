@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
-import { getMlServiceUrl } from '../api/config';
+import React, { useState, useEffect } from 'react';
+import { getApiBaseUrl, getMlServiceUrl } from '../api/config';
 import axios from 'axios';
-import { Cpu, CheckCircle, AlertTriangle, Info, BrainCircuit, ShieldAlert } from 'lucide-react';
+import { Cpu, CheckCircle, AlertTriangle, Info, BrainCircuit, ShieldAlert, MapPin, Loader2 } from 'lucide-react';
 
 const MLPredictorView = ({ currentUser }) => {
   const isHospital = Boolean(
@@ -11,9 +11,18 @@ const MLPredictorView = ({ currentUser }) => {
   );
 
   const token = currentUser?.token || localStorage.getItem('token');
+  const API_BASE = getApiBaseUrl();
+  const ML_SERVICE_URL = getMlServiceUrl();
+
+  const [hospitalLocation, setHospitalLocation] = useState({
+    taluk: '',
+    district: '',
+    hospital_name: ''
+  });
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [profileError, setProfileError] = useState('');
+
   const [formData, setFormData] = useState({
-    taluk: 'Koppa',
-    district: 'Chikkamagaluru',
     blood_group: 'B+',
     units_requested: 2,
     urgency_level: 'High'
@@ -22,7 +31,75 @@ const MLPredictorView = ({ currentUser }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const ML_SERVICE_URL = getMlServiceUrl();
+  // Automatically load the authenticated hospital's location from authoritative profile
+  useEffect(() => {
+    let isMounted = true;
+
+    if (!isHospital || !token) {
+      setHospitalLocation({ taluk: '', district: '', hospital_name: '' });
+      setProfileLoading(false);
+      setProfileError('');
+      setPrediction(null);
+      setError('');
+      return;
+    }
+
+    const loadProfile = async () => {
+      setProfileLoading(true);
+      setProfileError('');
+      setPrediction(null);
+      setError('');
+
+      try {
+        const res = await fetch(`${API_BASE}/api/v1/hospitals/me/profile`, {
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.detail || `Failed to fetch hospital profile (HTTP ${res.status})`);
+        }
+
+        const data = await res.json();
+        const profile = data?.hospital_profile;
+        if (!profile || !profile.district || !profile.taluk) {
+          throw new Error('Hospital profile is missing registered district or taluk. Please update hospital profile.');
+        }
+
+        if (isMounted) {
+          setHospitalLocation({
+            taluk: profile.taluk,
+            district: profile.district,
+            hospital_name: profile.hospital_name || currentUser?.name || 'Hospital'
+          });
+          setProfileLoading(false);
+        }
+      } catch (err) {
+        if (isMounted) {
+          const fallback = currentUser?.hospital_profile;
+          if (fallback?.district && fallback?.taluk) {
+            setHospitalLocation({
+              taluk: fallback.taluk,
+              district: fallback.district,
+              hospital_name: fallback.hospital_name || currentUser?.name || 'Hospital'
+            });
+            setProfileLoading(false);
+          } else {
+            setProfileError(err.message || 'Unable to load registered hospital location.');
+            setProfileLoading(false);
+          }
+        }
+      }
+    };
+
+    loadProfile();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [currentUser?.id, currentUser?.token, isHospital, token, API_BASE]);
 
   const handlePredict = async (e) => {
     e.preventDefault();
@@ -30,6 +107,11 @@ const MLPredictorView = ({ currentUser }) => {
       setError('Authenticated hospital account required.');
       return;
     }
+    if (!hospitalLocation.taluk || !hospitalLocation.district) {
+      setError('Registered hospital location required before running simulation.');
+      return;
+    }
+
     setLoading(true);
     setError('');
     setPrediction(null);
@@ -37,8 +119,8 @@ const MLPredictorView = ({ currentUser }) => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
       const res = await axios.post(`${ML_SERVICE_URL}/predict-availability`, {
-        taluk: formData.taluk,
-        district: formData.district,
+        taluk: hospitalLocation.taluk,
+        district: hospitalLocation.district,
         blood_group: formData.blood_group,
         units_requested: parseInt(formData.units_requested, 10),
         urgency_level: formData.urgency_level
@@ -82,34 +164,66 @@ const MLPredictorView = ({ currentUser }) => {
             Estimate regional blood stock availability at the taluk level based on historical supply and demand.
           </p>
         </div>
+        {hospitalLocation.hospital_name && (
+          <div className="text-right hidden sm:block">
+            <div className="text-xs font-bold text-white">{hospitalLocation.hospital_name}</div>
+            <div className="text-[11px] text-slate-400 flex items-center justify-end gap-1 mt-0.5">
+              <MapPin className="w-3 h-3 text-emerald-400" />
+              <span>{hospitalLocation.taluk}, {hospitalLocation.district}</span>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* Form Column */}
         <div className="md:col-span-2 p-6 rounded-2xl glass-panel border border-slate-800 space-y-4">
+          {profileLoading ? (
+            <div className="flex items-center space-x-3 p-4 rounded-xl bg-slate-900/60 border border-slate-800 text-slate-300">
+              <Loader2 className="w-4 h-4 animate-spin text-blood-500" />
+              <span className="text-xs font-medium">Detecting authenticated hospital registered location...</span>
+            </div>
+          ) : profileError ? (
+            <div className="p-4 rounded-xl bg-rose-950/60 border border-rose-800 text-rose-300 text-xs flex items-center space-x-3 font-semibold" role="alert">
+              <AlertTriangle className="w-5 h-5 flex-shrink-0 text-rose-400" />
+              <div>
+                <div className="font-bold text-white">Hospital Location Unavailable</div>
+                <div className="text-slate-300 mt-0.5">{profileError}</div>
+              </div>
+            </div>
+          ) : null}
+
           <form onSubmit={handlePredict} className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Taluk</label>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center justify-between">
+                  <span>Taluk</span>
+                  <span className="text-[10px] text-emerald-400 font-semibold flex items-center gap-1">
+                    <MapPin className="w-2.5 h-2.5" /> Registered
+                  </span>
+                </label>
                 <input
                   type="text"
-                  required
-                  value={formData.taluk}
-                  onChange={(e) => setFormData({ ...formData, taluk: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-3.5 py-2.5 text-xs font-bold focus:border-blood-500 outline-none"
-                  placeholder="e.g. Koppa"
+                  readOnly
+                  disabled
+                  value={profileLoading ? 'Detecting taluk...' : (hospitalLocation.taluk || '')}
+                  className="w-full bg-slate-950/80 border border-slate-800 text-white rounded-xl px-3.5 py-2.5 text-xs font-bold outline-none cursor-not-allowed opacity-90"
+                  title="Simulator is locked to your hospital's registered taluk"
                 />
               </div>
 
               <div>
-                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">District</label>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center justify-between">
+                  <span>District</span>
+                  <span className="text-[10px] text-slate-500 font-normal">Auto-detected</span>
+                </label>
                 <input
                   type="text"
-                  required
-                  value={formData.district}
-                  onChange={(e) => setFormData({ ...formData, district: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-3.5 py-2.5 text-xs font-bold focus:border-blood-500 outline-none"
-                  placeholder="e.g. Chikkamagaluru"
+                  readOnly
+                  disabled
+                  value={profileLoading ? 'Detecting district...' : (hospitalLocation.district || '')}
+                  className="w-full bg-slate-950/80 border border-slate-800 text-white rounded-xl px-3.5 py-2.5 text-xs font-bold outline-none cursor-not-allowed opacity-90"
+                  title="Simulator is locked to your hospital's registered district"
                 />
               </div>
             </div>
@@ -158,7 +272,7 @@ const MLPredictorView = ({ currentUser }) => {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || profileLoading || !hospitalLocation.taluk || !hospitalLocation.district || Boolean(profileError)}
               className="w-full bg-blood-700 hover:bg-blood-600 text-white font-bold p-3 rounded-xl shadow-sm transition flex items-center justify-center space-x-2 text-xs disabled:opacity-50"
             >
               <Cpu className="w-4 h-4" />
@@ -194,14 +308,15 @@ const MLPredictorView = ({ currentUser }) => {
                 </div>
 
                 <div className="text-xs text-slate-300 space-y-1.5 bg-slate-900/80 p-3 rounded-xl border border-slate-800">
-                  <div><strong className="text-white">Taluk Analyzed:</strong> {formData.taluk}</div>
+                  <div><strong className="text-white">Taluk Analyzed:</strong> {prediction.taluk || hospitalLocation.taluk}</div>
+                  <div><strong className="text-white">District:</strong> {prediction.district || hospitalLocation.district}</div>
                   <div><strong className="text-white">Group:</strong> {formData.blood_group} ({formData.units_requested} units)</div>
                   <div><strong className="text-white">Fulfillment Score:</strong> {prediction.fulfillment_score}/100</div>
                 </div>
               </div>
             ) : (
               <div className="py-12 text-center text-slate-500 text-xs">
-                Fill the form and trigger simulation to evaluate regional availability.
+                {profileLoading ? 'Loading hospital profile...' : 'Select blood group and trigger simulation to evaluate regional availability.'}
               </div>
             )}
           </div>

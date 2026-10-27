@@ -4,6 +4,7 @@ Fixed version - matches actual database schema.
 """
 
 import os
+import re
 import json
 import sqlite3
 import datetime
@@ -3139,9 +3140,39 @@ except Exception as _e:
     _ml_pipeline = None
 
 
+DISTRICT_ALIAS_MAP: dict[str, str] = {
+    "chikmagalur": "chikkamagaluru",
+    "chikkamagalur": "chikkamagaluru",
+    "chikkamagaluru": "chikkamagaluru",
+    "shimoga": "shivamogga",
+    "shivamogga": "shivamogga",
+    "belgaum": "belagavi",
+    "belagavi": "belagavi",
+    "bangalore": "bengaluru",
+    "bengaluru": "bengaluru",
+    "gulbarga": "kalaburagi",
+    "kalaburagi": "kalaburagi",
+    "bijapur": "vijayapura",
+    "vijayapura": "vijayapura",
+    "bellary": "ballari",
+    "ballari": "ballari",
+    "mysore": "mysuru",
+    "mysuru": "mysuru",
+    "tumkur": "tumakuru",
+    "tumakuru": "tumakuru",
+}
+
+
+def normalize_district_name(district: str | None) -> str:
+    if not district or not str(district).strip():
+        return ""
+    cleaned = re.sub(r"[^a-z0-9]+", "", str(district).strip().lower())
+    return DISTRICT_ALIAS_MAP.get(cleaned, cleaned)
+
+
 class MLPredictionRequest(BaseModel):
-    taluk: str = Field(..., examples=["Koppa"])
-    district: str = Field(..., examples=["Chikmagalur"])
+    taluk: Optional[str] = Field(default=None, description="Taluk name (enforced to authenticated hospital location)")
+    district: Optional[str] = Field(default=None, description="District name (enforced to authenticated hospital location)")
     blood_group: str = Field(..., examples=["B+"])
     units_requested: int = Field(default=2, ge=1, le=50)
     urgency_level: str = Field(default="High", examples=["High"])
@@ -3169,7 +3200,9 @@ def _run_prediction(req: MLPredictionRequest):
                 "is_available": is_avail,
                 "confidence": round(confidence, 3),
                 "fulfillment_score": int(confidence * 100) if is_avail else int((1 - confidence) * 100),
-                "method": "random_forest_pipeline"
+                "method": "random_forest_pipeline",
+                "taluk": req.taluk,
+                "district": req.district
             }
         except Exception as err:
             pass
@@ -3182,7 +3215,9 @@ def _run_prediction(req: MLPredictionRequest):
         "is_available": is_avail,
         "confidence": confidence,
         "fulfillment_score": 85 if is_avail else 38,
-        "method": "heuristic_fallback"
+        "method": "heuristic_fallback",
+        "taluk": req.taluk,
+        "district": req.district
     }
 
 
@@ -3191,11 +3226,63 @@ def _run_prediction(req: MLPredictionRequest):
 def predict_blood_availability(
     req: MLPredictionRequest,
     user: dict = Depends(get_current_user),
+    conn: Any = Depends(get_db),
 ):
     role = str(user.get("role", "")).upper()
     if role not in ("ROLE_HOSPITAL", "HOSPITAL"):
         raise HTTPException(status_code=403, detail="Hospital access required")
-    return _run_prediction(req)
+
+    hp = conn.execute(
+        "SELECT district, taluk FROM hospital_profiles WHERE hospital_user_id = ?",
+        (user["id"],)
+    ).fetchone()
+    if not hp:
+        raise HTTPException(
+            status_code=404,
+            detail="Hospital profile not found for authenticated user."
+        )
+
+    stored_district = (hp["district"] or "").strip()
+    stored_taluk = (hp["taluk"] or "").strip()
+    if not stored_district or not stored_taluk:
+        raise HTTPException(
+            status_code=400,
+            detail="Hospital profile is missing registered district or taluk."
+        )
+
+    # Validate that client cannot override location to simulate another hospital's area
+    if req.taluk:
+        try:
+            req_t_norm = normalize_taluk_name(req.taluk)
+            stored_t_norm = normalize_taluk_name(stored_taluk)
+            if req_t_norm != stored_t_norm:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Location mismatch: hospital cannot simulate predictions for taluk '{req.taluk}'. Predictions are restricted to your registered taluk '{stored_taluk}'."
+                )
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid taluk '{req.taluk}' provided in prediction request."
+            )
+
+    if req.district:
+        req_d = normalize_district_name(req.district)
+        stored_d = normalize_district_name(stored_district)
+        if req_d != stored_d and not (req_d in stored_d or stored_d in req_d):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Location mismatch: hospital cannot simulate predictions for district '{req.district}'. Predictions are restricted to your registered district '{stored_district}'."
+            )
+
+    # Strictly enforce the hospital's authoritative location for ML prediction
+    req.taluk = stored_taluk
+    req.district = stored_district
+
+    res = _run_prediction(req)
+    res["taluk"] = stored_taluk
+    res["district"] = stored_district
+    return res
 
 
 @app.get("/metrics")
