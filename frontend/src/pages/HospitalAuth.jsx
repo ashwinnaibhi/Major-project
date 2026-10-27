@@ -78,6 +78,8 @@ export default function HospitalAuth({ onAuthSuccess, onSwitchToDonor }) {
     if (loading) return;
     setMessage(null);
     if (mode === 'register') {
+      if (!form.district) { setMessage({ type: 'error', text: 'Please select a district.' }); return; }
+      if (!form.taluk) { setMessage({ type: 'error', text: 'Please select a taluk.' }); return; }
       if (form.password.length < 8) { setMessage({ type: 'error', text: 'Password must contain at least 8 characters.' }); return; }
       if (form.password !== form.confirm_password) { setMessage({ type: 'error', text: 'Password and confirmation do not match.' }); return; }
       const hasLatitude = String(form.latitude).trim() !== '';
@@ -274,8 +276,8 @@ export default function HospitalAuth({ onAuthSuccess, onSwitchToDonor }) {
                         {(locations.districts || []).map((district) => <option key={district} value={district}>{district}</option>)}
                       </select>
                     </Field>
-                    <Field label="Taluk (optional)">
-                      <select value={form.taluk} onChange={(e) => update('taluk', e.target.value)} disabled={!form.district} className={`${inputClass} disabled:opacity-50`}>
+                    <Field label="Taluk" required>
+                      <select value={form.taluk} onChange={(e) => update('taluk', e.target.value)} disabled={!form.district} required className={`${inputClass} disabled:opacity-50`}>
                         <option value="">Select taluk</option>
                         {taluks.map((taluk) => <option key={taluk} value={taluk}>{taluk}</option>)}
                       </select>

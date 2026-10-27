@@ -32,7 +32,7 @@ else:
     load_dotenv()
 
 from database import get_db, is_postgres, init_postgres_schema, get_db_connection, ensure_admin_account
-from provision_hospitals import generate_hospital_username, DEFAULT_INITIAL_PASSWORD, provision_all_hospitals
+from provision_hospitals import generate_hospital_username, DEFAULT_INITIAL_PASSWORD, provision_all_hospitals, normalize_taluk_name
 from email_service import (
     send_verification_email,
     send_verification_smtp_email,
@@ -796,6 +796,48 @@ def register_hospital(req: HospitalRegisterPayload, conn: Any = Depends(get_db))
     if not district:
         raise HTTPException(status_code=400, detail="Hospital district is required.")
 
+    taluk = (req.taluk or "").strip()
+    if not taluk:
+        raise HTTPException(status_code=400, detail="Hospital taluk is required.")
+
+    # Validate taluk against verified Karnataka location catalog
+    catalog = load_location_catalog()
+    taluks_by_district = catalog.get("taluks_by_district", {})
+
+    try:
+        norm_taluk = normalize_taluk_name(taluk)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    matched_district = None
+    for d_name in taluks_by_district:
+        if d_name.lower() == district.lower():
+            matched_district = d_name
+            break
+
+    if matched_district:
+        valid_taluks = taluks_by_district[matched_district]
+        taluk_valid = any(
+            t.lower() == taluk.lower() or normalize_taluk_name(t) == norm_taluk
+            for t in valid_taluks
+        )
+        if not taluk_valid:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Taluk '{taluk}' is not a valid taluk in district '{district}'."
+            )
+    else:
+        all_valid_taluks = [t for t_list in taluks_by_district.values() for t in t_list]
+        taluk_valid = any(
+            t.lower() == taluk.lower() or normalize_taluk_name(t) == norm_taluk
+            for t in all_valid_taluks
+        )
+        if not taluk_valid:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Taluk '{taluk}' is not recognized in the verified Karnataka location catalog."
+            )
+
     # Check if contact email already exists
     existing_contact = conn.execute(
         "SELECT hospital_user_id FROM hospital_profiles WHERE LOWER(contact_email) = LOWER(?)",
@@ -804,7 +846,7 @@ def register_hospital(req: HospitalRegisterPayload, conn: Any = Depends(get_db))
     if existing_contact:
         raise HTTPException(status_code=400, detail="A hospital account with this contact email already exists.")
 
-    assigned_username = generate_hospital_username(req.taluk or district, hospital_name, conn=conn)
+    assigned_username = generate_hospital_username(taluk, hospital_name, conn=conn)
 
     pw_hash = hash_password(req.password)
     now_iso = datetime.datetime.utcnow().isoformat(sep=" ", timespec="seconds")
@@ -821,7 +863,7 @@ def register_hospital(req: HospitalRegisterPayload, conn: Any = Depends(get_db))
         """INSERT INTO hospital_profiles
              (hospital_user_id, hospital_name, address, district, taluk, latitude, longitude, contact_email, contact_phone, must_change_password, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)""",
-        (user_id, hospital_name, address, district, req.taluk or None, req.latitude, req.longitude, clean_email, req.phone.strip(), now_iso, now_iso),
+        (user_id, hospital_name, address, district, taluk, req.latitude, req.longitude, clean_email, req.phone.strip(), now_iso, now_iso),
     )
     conn.commit()
 

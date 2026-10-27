@@ -1,6 +1,6 @@
 """
 Provision dedicated hospital login accounts and synchronize government hospitals.
-Enforces the <taluk>_phc@haemopulse.in login identity standard across all 31 districts
+Enforces the <taluk>_ghpc@haemopulse.in login identity standard across all 31 districts
 and 239 taluks of Karnataka while keeping real notification contact emails separated.
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ except ImportError:
 
 import database
 
-DEFAULT_INITIAL_PASSWORD = os.getenv("HOSPITAL_INITIAL_PASSWORD", "haemo@123")
+DEFAULT_INITIAL_PASSWORD = os.getenv("HOSPITAL_INITIAL_PASSWORD", "1234567890")
 
 
 def hash_password(password: str) -> str:
@@ -36,9 +36,39 @@ def hash_password(password: str) -> str:
     return f"pbkdf2_sha256${iterations}${salt.hex()}${digest}"
 
 
+TALUK_ALIAS_MAP: dict[str, str] = {
+    "narasimharajapura": "nrpura",
+    "nrpura": "nrpura",
+    "nr_pura": "nrpura",
+    "n_r_pura": "nrpura",
+    "narasimharaja_pura": "nrpura",
+}
+
+
+def normalize_taluk_name(taluk: str | None) -> str:
+    """
+    Robust, reusable normalization function for taluk names:
+    - Lowercase
+    - Strip all whitespace and punctuation
+    - Preserve core taluk identity
+    - Map aliases (e.g., N.R. Pura / Narasimharajapura -> nrpura)
+    - Rejects empty or missing taluk values
+    """
+    if taluk is None or not str(taluk).strip():
+        raise ValueError("Taluk name is required and cannot be empty.")
+    raw = str(taluk).strip().lower()
+    cleaned = re.sub(r"[^a-z0-9]+", "", raw)
+    if not cleaned:
+        raise ValueError(f"Invalid taluk name: '{taluk}'")
+    return TALUK_ALIAS_MAP.get(cleaned, cleaned)
+
+
 def clean_taluk_name(taluk: str) -> str:
-    """Normalize taluk name to clean snake_case slug."""
-    return re.sub(r"[^a-z0-9]+", "_", (taluk or "karnataka").lower().strip()).strip("_") or "general"
+    """Normalize taluk name to clean slug; falls back to 'general' if invalid."""
+    try:
+        return normalize_taluk_name(taluk)
+    except ValueError:
+        return "general"
 
 
 def generate_hospital_slug(taluk: str, hospital_name: str) -> str:
@@ -87,14 +117,14 @@ def generate_hospital_slug(taluk: str, hospital_name: str) -> str:
 def generate_hospital_username(taluk: str, hospital_name: str, conn: Any = None, exclude_user_id: int | None = None) -> str:
     """
     Returns standard dedicated login identity:
-    Primary facility: <taluk>_phc@haemopulse.in
+    Primary facility: <taluk>_ghpc@haemopulse.in
     Preserved accounts:
       User 3: koppa_ghpc@haemopulse.in
       User 16: koppa_nrpura@haemopulse.in
     Collision resolution:
-      Secondary facility in same taluk: <taluk>_<slug>_phc@haemopulse.in
+      Secondary facility in same taluk: <taluk>_<slug>_ghpc@haemopulse.in
     """
-    t_clean = clean_taluk_name(taluk)
+    t_clean = normalize_taluk_name(taluk)
     h_lower = (hospital_name or "").lower().strip()
 
     # Preserved account: Koppa General Hospital (User 3)
@@ -106,7 +136,7 @@ def generate_hospital_username(taluk: str, hospital_name: str, conn: Any = None,
         if exclude_user_id == 16:
             return "koppa_nrpura@haemopulse.in"
 
-    base = f"{t_clean}_phc@haemopulse.in"
+    base = f"{t_clean}_ghpc@haemopulse.in"
     if not conn:
         return base
 
@@ -116,14 +146,14 @@ def generate_hospital_username(taluk: str, hospital_name: str, conn: Any = None,
 
     # Deterministic collision resolution: qualify with slug
     slug = generate_hospital_slug(taluk, hospital_name)
-    candidate = f"{t_clean}_{slug}_phc@haemopulse.in"
+    candidate = f"{t_clean}_{slug}_ghpc@haemopulse.in"
     counter = 1
     while True:
         existing = conn.execute("SELECT id FROM users WHERE LOWER(email) = LOWER(?)", (candidate,)).fetchone()
         if not existing or (exclude_user_id and existing["id"] == exclude_user_id):
             return candidate
         counter += 1
-        candidate = f"{t_clean}_{slug}_{counter}_phc@haemopulse.in"
+        candidate = f"{t_clean}_{slug}_{counter}_ghpc@haemopulse.in"
 
 
 def provision_all_hospitals(initial_password: str = DEFAULT_INITIAL_PASSWORD, dry_run: bool = False, conn: Any = None) -> dict[str, Any]:
@@ -375,18 +405,21 @@ def provision_all_hospitals(initial_password: str = DEFAULT_INITIAL_PASSWORD, dr
 
             # Determine dedicated login username for facility
             t_clean = clean_taluk_name(taluk)
-            primary_username = f"{t_clean}_phc@haemopulse.in"
+            primary_username = f"{t_clean}_ghpc@haemopulse.in"
 
             # Check if this facility already exists by taluk + hospital_name OR by primary_username
             existing_by_profile = conn.execute("""
                 SELECT u.id, u.email, u.name, hp.hospital_name, hp.taluk
                 FROM users u
                 JOIN hospital_profiles hp ON u.id = hp.hospital_user_id
-                WHERE (LOWER(hp.taluk) = LOWER(?) AND LOWER(hp.hospital_name) = LOWER(?))
-                   OR LOWER(u.email) = LOWER(?)
+                WHERE u.id NOT IN (3, 16)
+                  AND (
+                    (LOWER(hp.taluk) = LOWER(?) AND LOWER(hp.hospital_name) = LOWER(?))
+                    OR (LOWER(u.email) = LOWER(?) AND LOWER(hp.taluk) = LOWER(?))
+                  )
                 ORDER BY u.id ASC
                 LIMIT 1
-            """, (taluk, h_name, primary_username)).fetchone()
+            """, (taluk, h_name, primary_username, taluk)).fetchone()
 
             if existing_by_profile:
                 username = existing_by_profile["email"]
@@ -437,11 +470,11 @@ def provision_all_hospitals(initial_password: str = DEFAULT_INITIAL_PASSWORD, dr
             else:
                 # In-session collision (multiple facilities in the same taluk)
                 slug = generate_hospital_slug(taluk, h_name)
-                candidate = f"{t_clean}_{slug}_phc@haemopulse.in"
+                candidate = f"{t_clean}_{slug}_ghpc@haemopulse.in"
                 counter = 1
                 while candidate in session_allocated_usernames or conn.execute("SELECT id FROM users WHERE LOWER(email) = LOWER(?)", (candidate,)).fetchone():
                     counter += 1
-                    candidate = f"{t_clean}_{slug}_{counter}_phc@haemopulse.in"
+                    candidate = f"{t_clean}_{slug}_{counter}_ghpc@haemopulse.in"
                 username = candidate
                 results["collisions_resolved"].append({
                     "facility": h_name, "taluk": taluk, "username": username
@@ -516,6 +549,145 @@ def provision_all_hospitals(initial_password: str = DEFAULT_INITIAL_PASSWORD, dr
     else:
         conn.commit()
         results["dry_run"] = False
+
+    if close_conn:
+        conn.close()
+
+    return results
+
+
+def migrate_hospital_accounts_and_passwords(
+    conn: Any = None,
+    initial_password: str = DEFAULT_INITIAL_PASSWORD,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """
+    Safely and idempotently migrates existing hospital accounts:
+    1. Standardizes login emails to <normalized_taluk_name>_ghpc@haemopulse.in.
+    2. Flags duplicate conflicts for manual review without overwriting records.
+    3. Standardizes initial hospital passwords to 1234567890 (PBKDF2 SHA-256)
+       and sets must_change_password = 1.
+    4. Preserves account IDs, profile relationships, and inventory.
+    """
+    close_conn = False
+    if conn is None:
+        conn = database.get_db_connection()
+        close_conn = True
+
+    results: dict[str, Any] = {
+        "total_inspected": 0,
+        "already_correct": 0,
+        "corrected": 0,
+        "passwords_updated": 0,
+        "duplicate_conflicts": 0,
+        "manual_review_records": [],
+        "corrected_records": [],
+        "dry_run": dry_run,
+    }
+
+    hospitals = conn.execute("""
+        SELECT u.id, u.email, u.name, hp.hospital_name, hp.taluk, hp.district, u.must_change_password
+        FROM users u
+        LEFT JOIN hospital_profiles hp ON u.id = hp.hospital_user_id
+        WHERE u.role = 'ROLE_HOSPITAL'
+        ORDER BY u.id ASC
+    """).fetchall()
+
+    results["total_inspected"] = len(hospitals)
+    if not hospitals:
+        if close_conn:
+            conn.close()
+        return results
+
+    pw_hash = hash_password(initial_password)
+
+    # First pass: map current emails and identify already-correct accounts
+    desired_email_by_user: dict[int, str | None] = {}
+    correct_email_by_user: dict[int, str] = {}
+
+    for row in hospitals:
+        u_id = row["id"]
+        current_email = (row["email"] or "").strip().lower()
+        taluk_val = row["taluk"] or ""
+        try:
+            norm_taluk = normalize_taluk_name(taluk_val)
+            desired_email = f"{norm_taluk}_ghpc@haemopulse.in"
+        except ValueError:
+            desired_email = None
+
+        desired_email_by_user[u_id] = desired_email
+        if desired_email and current_email == desired_email:
+            correct_email_by_user[u_id] = desired_email
+
+    taken_emails = set(correct_email_by_user.values())
+
+    for row in hospitals:
+        u_id = row["id"]
+        current_email = (row["email"] or "").strip().lower()
+        desired_email = desired_email_by_user[u_id]
+        h_name = row["hospital_name"] or row["name"] or ""
+        taluk = row["taluk"] or ""
+
+        # Update password for all hospital accounts to standardized initial password with must_change_password = 1
+        conn.execute("""
+            UPDATE users
+            SET password = ?, must_change_password = 1
+            WHERE id = ?
+        """, (pw_hash, u_id))
+        conn.execute("""
+            UPDATE hospital_profiles
+            SET must_change_password = 1
+            WHERE hospital_user_id = ?
+        """, (u_id,))
+        results["passwords_updated"] += 1
+
+        if not desired_email:
+            results["manual_review_records"].append({
+                "id": u_id,
+                "current_email": current_email,
+                "hospital_name": h_name,
+                "taluk": taluk,
+                "reason": "Missing or unparseable taluk; unable to derive <taluk>_ghpc@haemopulse.in email."
+            })
+            continue
+
+        if current_email == desired_email:
+            results["already_correct"] += 1
+            continue
+
+        # Check if desired_email is already claimed by another user
+        if desired_email in taken_emails:
+            results["duplicate_conflicts"] += 1
+            results["manual_review_records"].append({
+                "id": u_id,
+                "current_email": current_email,
+                "hospital_name": h_name,
+                "taluk": taluk,
+                "desired_email": desired_email,
+                "reason": f"Duplicate email conflict: '{desired_email}' is already assigned to a primary facility in taluk '{taluk}'. Preserving existing identifier for manual review."
+            })
+            continue
+
+        # Safe to update email
+        conn.execute("""
+            UPDATE users
+            SET email = ?
+            WHERE id = ?
+        """, (desired_email, u_id))
+        taken_emails.add(desired_email)
+        results["corrected"] += 1
+        results["corrected_records"].append({
+            "id": u_id,
+            "old_email": current_email,
+            "new_email": desired_email,
+            "hospital_name": h_name,
+            "taluk": taluk
+        })
+
+    if dry_run:
+        conn.rollback()
+    else:
+        conn.commit()
 
     if close_conn:
         conn.close()

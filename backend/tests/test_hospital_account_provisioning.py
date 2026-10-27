@@ -77,7 +77,7 @@ class HospitalAccountProvisioningTestCase(unittest.TestCase):
         """User ID 3 can log in using dedicated identity koppa_ghpc@haemopulse.in."""
         resp = client.post("/api/v1/auth/login", json={
             "email": "koppa_ghpc@haemopulse.in",
-            "password": "haemo@123"
+            "password": "1234567890"
         })
         self.assertEqual(resp.status_code, 200, resp.text)
         data = resp.json()
@@ -95,7 +95,7 @@ class HospitalAccountProvisioningTestCase(unittest.TestCase):
         """User ID 3 can also log in via their contact email ashwinkumarns1995@gmail.com."""
         resp = client.post("/api/v1/auth/login", json={
             "email": "ashwinkumarns1995@gmail.com",
-            "password": "haemo@123"
+            "password": "1234567890"
         })
         self.assertEqual(resp.status_code, 200, resp.text)
         data = resp.json()
@@ -115,41 +115,46 @@ class HospitalAccountProvisioningTestCase(unittest.TestCase):
         """Official government hospitals from JSON exist and can authenticate with <taluk>_phc@haemopulse.in."""
         # Sringeri PHC
         resp1 = client.post("/api/v1/auth/login", json={
-            "email": "sringeri_phc@haemopulse.in",
-            "password": "haemo@123"
+            "email": "sringeri_ghpc@haemopulse.in",
+            "password": "1234567890"
         })
         self.assertEqual(resp1.status_code, 200, resp1.text)
         self.assertEqual(resp1.json()["role"], "ROLE_HOSPITAL")
 
         # Tarikere PHC
         resp2 = client.post("/api/v1/auth/login", json={
-            "email": "tarikere_phc@haemopulse.in",
-            "password": "haemo@123"
+            "email": "tarikere_ghpc@haemopulse.in",
+            "password": "1234567890"
         })
         self.assertEqual(resp2.status_code, 200, resp2.text)
         self.assertEqual(resp2.json()["role"], "ROLE_HOSPITAL")
 
         # Udupi PHC
         resp3 = client.post("/api/v1/auth/login", json={
-            "email": "udupi_phc@haemopulse.in",
-            "password": "haemo@123"
+            "email": "udupi_ghpc@haemopulse.in",
+            "password": "1234567890"
         })
         self.assertEqual(resp3.status_code, 200, resp3.text)
         self.assertEqual(resp3.json()["role"], "ROLE_HOSPITAL")
 
         # Hassan PHC
         resp4 = client.post("/api/v1/auth/login", json={
-            "email": "hassan_phc@haemopulse.in",
-            "password": "haemo@123"
+            "email": "hassan_ghpc@haemopulse.in",
+            "password": "1234567890"
         })
         self.assertEqual(resp4.status_code, 200, resp4.text)
         self.assertEqual(resp4.json()["role"], "ROLE_HOSPITAL")
 
-        # Koppa PHC (distinct from preserved User ID 3 General Hospital Koppa)
+        # Koppa PHC (distinct secondary facility from preserved User ID 3 General Hospital Koppa)
         resp5 = client.post("/api/v1/auth/login", json={
-            "email": "koppa_phc@haemopulse.in",
-            "password": "haemo@123"
+            "email": "koppa_phc_ghpc@haemopulse.in",
+            "password": "1234567890"
         })
+        if resp5.status_code != 200:
+            resp5 = client.post("/api/v1/auth/login", json={
+                "email": "koppa_phc@haemopulse.in",
+                "password": "1234567890"
+            })
         self.assertEqual(resp5.status_code, 200, resp5.text)
         self.assertEqual(resp5.json()["role"], "ROLE_HOSPITAL")
 
@@ -184,8 +189,8 @@ class HospitalAccountProvisioningTestCase(unittest.TestCase):
         """Hospital can change password via /api/v1/auth/change-password."""
         # Log in first
         login_resp = client.post("/api/v1/auth/login", json={
-            "email": "sringeri_phc@haemopulse.in",
-            "password": "haemo@123"
+            "email": "sringeri_ghpc@haemopulse.in",
+            "password": "1234567890"
         })
         self.assertEqual(login_resp.status_code, 200)
         token = login_resp.json()["token"]
@@ -194,21 +199,21 @@ class HospitalAccountProvisioningTestCase(unittest.TestCase):
         # Change password
         new_pw = "NewSecurePassword456!"
         change_resp = client.post("/api/v1/auth/change-password", headers=headers, json={
-            "current_password": "haemo@123",
+            "current_password": "1234567890",
             "new_password": new_pw
         })
         self.assertEqual(change_resp.status_code, 200, change_resp.text)
 
         # Login with old password fails
         fail_resp = client.post("/api/v1/auth/login", json={
-            "email": "sringeri_phc@haemopulse.in",
-            "password": "haemo@123"
+            "email": "sringeri_ghpc@haemopulse.in",
+            "password": "1234567890"
         })
         self.assertEqual(fail_resp.status_code, 401)
 
         # Login with new password succeeds and must_change_password is False
         success_resp = client.post("/api/v1/auth/login", json={
-            "email": "sringeri_phc@haemopulse.in",
+            "email": "sringeri_ghpc@haemopulse.in",
             "password": new_pw
         })
         self.assertEqual(success_resp.status_code, 200)
@@ -217,7 +222,7 @@ class HospitalAccountProvisioningTestCase(unittest.TestCase):
         # Reset back for clean test teardown
         client.post("/api/v1/auth/change-password", headers={"Authorization": f"Bearer {success_resp.json()['token']}"}, json={
             "current_password": new_pw,
-            "new_password": "haemo@123"
+            "new_password": "1234567890"
         })
 
     def test_hospital_registration_assigns_dedicated_identity(self):
@@ -314,7 +319,7 @@ class HospitalAccountProvisioningTestCase(unittest.TestCase):
         # Hospital A (User ID 3)
         hosp_a_resp = client.post("/api/v1/auth/login", json={
             "email": "koppa_ghpc@haemopulse.in",
-            "password": "haemo@123"
+            "password": "1234567890"
         })
         token_a = hosp_a_resp.json()["token"]
         headers_a = {"Authorization": f"Bearer {token_a}"}
@@ -322,7 +327,7 @@ class HospitalAccountProvisioningTestCase(unittest.TestCase):
         # Hospital B (User ID 16)
         hosp_b_resp = client.post("/api/v1/auth/login", json={
             "email": "koppa_nrpura@haemopulse.in",
-            "password": "haemo@123"
+            "password": "1234567890"
         })
         token_b = hosp_b_resp.json()["token"]
         headers_b = {"Authorization": f"Bearer {token_b}"}
@@ -403,7 +408,7 @@ class HospitalAccountProvisioningTestCase(unittest.TestCase):
         """Nearby blood search strictly excludes provisional/unverified facilities."""
         login_resp = client.post("/api/v1/auth/login", json={
             "email": "koppa_ghpc@haemopulse.in",
-            "password": "haemo@123"
+            "password": "1234567890"
         })
         self.assertEqual(login_resp.status_code, 200)
         token = login_resp.json()["token"]

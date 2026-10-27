@@ -306,9 +306,9 @@ class TestEmailVerification(unittest.TestCase):
         self.assertEqual(donor_res.status_code, 200)
         self.assertEqual(donor_res.json()["role"], "ROLE_DONOR")
 
-        hosp_res = self.client.post("/api/v1/auth/login", json={"email": "ashwinkumarns1995@gmail.com", "password": "haemo@123"})
+        hosp_res = self.client.post("/api/v1/auth/login", json={"email": "ashwinkumarns1995@gmail.com", "password": "1234567890"})
         if hosp_res.status_code != 200:
-            hosp_res = self.client.post("/api/v1/auth/login", json={"email": "ashwinkumarns1995@gmail.com", "password": "hospital123"})
+            hosp_res = self.client.post("/api/v1/auth/login", json={"email": "ashwinkumarns1995@gmail.com", "password": "haemo@123"})
         self.assertEqual(hosp_res.status_code, 200)
         self.assertEqual(hosp_res.json()["role"], "ROLE_HOSPITAL")
 

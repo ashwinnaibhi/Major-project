@@ -700,6 +700,11 @@ def init_postgres_schema(conn: PostgresConnectionWrapper) -> None:
         except Exception:
             pass
     conn.commit()
+    try:
+        from provision_hospitals import migrate_hospital_accounts_and_passwords
+        migrate_hospital_accounts_and_passwords(conn=conn)
+    except Exception:
+        pass
 
 
 def _migrate_sqlite(conn: sqlite3.Connection) -> None:
@@ -859,6 +864,13 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
         if h_count == 0:
             from provision_hospitals import provision_all_hospitals
             provision_all_hospitals(conn=conn)
+        else:
+            phc_count = conn.execute(
+                "SELECT count(*) FROM users WHERE role = 'ROLE_HOSPITAL' AND LOWER(email) LIKE '%_phc@haemopulse.in' AND id NOT IN (16, 26)"
+            ).fetchone()[0]
+            if phc_count > 0:
+                from provision_hospitals import migrate_hospital_accounts_and_passwords
+                migrate_hospital_accounts_and_passwords(conn=conn)
     except Exception:
         pass
 
