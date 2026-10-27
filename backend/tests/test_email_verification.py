@@ -22,12 +22,17 @@ import datetime
 import hashlib
 import tempfile
 import unittest
+import sys
 from unittest.mock import patch, MagicMock
+
+BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BACKEND_DIR not in sys.path:
+    sys.path.insert(0, BACKEND_DIR)
 
 # Ensure we use an isolated temporary test database
 TEMP_DIR = tempfile.mkdtemp()
 TEST_DB_PATH = os.path.join(TEMP_DIR, "test_bloodbank.db")
-ORIGINAL_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bloodbank.db")
+ORIGINAL_DB_PATH = os.path.join(BACKEND_DIR, "bloodbank.db")
 if not os.path.exists(ORIGINAL_DB_PATH):
     import database
     database.ensure_sqlite_db_ready(ORIGINAL_DB_PATH)
@@ -42,9 +47,6 @@ os.environ["SMTP_PORT"] = "587"
 os.environ["SMTP_USER"] = "test_sender@gmail.com"
 os.environ["SMTP_PASS"] = "mock_app_password"
 os.environ["FRONTEND_BASE_URL"] = "http://localhost:3000"
-
-import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import server
 import database

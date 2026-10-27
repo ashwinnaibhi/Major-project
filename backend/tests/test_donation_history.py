@@ -55,6 +55,8 @@ class DonationHistoryTestCase(unittest.TestCase):
         cls.temp_dir = tempfile.mkdtemp()
         cls.test_db = os.path.join(cls.temp_dir, "test_bloodbank.db")
         original_db = os.path.join(BACKEND_DIR, "bloodbank.db")
+        if not os.path.exists(original_db):
+            database.ensure_sqlite_db_ready(original_db)
         shutil.copyfile(original_db, cls.test_db)
 
         cls.orig_env_db = os.environ.get("BLOODBANK_DB_FILE")

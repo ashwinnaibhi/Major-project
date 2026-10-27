@@ -527,18 +527,6 @@ CREATE TABLE IF NOT EXISTS donation_history (
     updated_at TEXT NOT NULL,
     requisition_id INTEGER REFERENCES blood_requests(id)
 );
-
-CREATE INDEX IF NOT EXISTS idx_donors_blood_group ON donors(blood_group);
-CREATE INDEX IF NOT EXISTS idx_donors_district_taluk ON donors(district, taluk);
-CREATE INDEX IF NOT EXISTS idx_users_email ON users(LOWER(email));
-CREATE INDEX IF NOT EXISTS idx_donation_history_donor_id ON donation_history(donor_id);
-CREATE INDEX IF NOT EXISTS idx_donation_history_donor_email ON donation_history(LOWER(donor_email));
-CREATE INDEX IF NOT EXISTS idx_donation_history_hospital ON donation_history(hospital_user_id);
-CREATE INDEX IF NOT EXISTS idx_donation_history_status ON donation_history(status);
-CREATE INDEX IF NOT EXISTS idx_donation_history_date ON donation_history(donation_date DESC);
-CREATE INDEX IF NOT EXISTS idx_donation_history_synthetic ON donation_history(is_synthetic);
-CREATE INDEX IF NOT EXISTS idx_donation_history_cert ON donation_history(UPPER(certificate_code));
-CREATE UNIQUE INDEX IF NOT EXISTS idx_active_appointment_donor_email ON appointments (LOWER(TRIM(donor_email))) WHERE UPPER(TRIM(status)) IN ('SCHEDULED', 'PENDING', 'CONFIRMED', 'APPROVED');
 """
 
 
@@ -717,57 +705,83 @@ def init_postgres_schema(conn: PostgresConnectionWrapper) -> None:
 def _migrate_sqlite(conn: sqlite3.Connection) -> None:
     """Ensures tables, columns, indexes, and baseline seeds exist in SQLite database."""
     conn.executescript(SQLITE_SCHEMA_DDL)
-    try:
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(blood_requests)").fetchall()]
-        if cols and "units_fulfilled" not in cols:
-            conn.execute("ALTER TABLE blood_requests ADD COLUMN units_fulfilled INTEGER DEFAULT 0")
-        if cols and "fulfilled_at" not in cols:
-            conn.execute("ALTER TABLE blood_requests ADD COLUMN fulfilled_at TEXT")
-    except Exception:
-        pass
-    try:
-        conn.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_active_appointment_donor_email
-            ON appointments (LOWER(TRIM(donor_email)))
-            WHERE UPPER(TRIM(status)) IN ('SCHEDULED', 'PENDING', 'CONFIRMED', 'APPROVED')
-        """)
-    except Exception:
-        pass
-    try:
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(donation_history)").fetchall()]
-        if cols and "requisition_id" not in cols:
-            conn.execute("ALTER TABLE donation_history ADD COLUMN requisition_id INTEGER REFERENCES blood_requests(id)")
-    except Exception:
-        pass
-    try:
-        u_cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
-        if u_cols and "must_change_password" not in u_cols:
-            conn.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0")
-    except Exception:
-        pass
-    try:
-        hp_cols = [r[1] for r in conn.execute("PRAGMA table_info(hospital_profiles)").fetchall()]
-        if hp_cols:
-            if "contact_email" not in hp_cols:
-                conn.execute("ALTER TABLE hospital_profiles ADD COLUMN contact_email TEXT")
-            if "contact_phone" not in hp_cols:
-                conn.execute("ALTER TABLE hospital_profiles ADD COLUMN contact_phone TEXT")
-            if "category" not in hp_cols:
-                conn.execute("ALTER TABLE hospital_profiles ADD COLUMN category TEXT DEFAULT 'General Hospital'")
-            if "has_blood_bank" not in hp_cols:
-                conn.execute("ALTER TABLE hospital_profiles ADD COLUMN has_blood_bank INTEGER DEFAULT 0")
-            if "verification_status" not in hp_cols:
-                conn.execute("ALTER TABLE hospital_profiles ADD COLUMN verification_status TEXT DEFAULT 'PROVISIONAL'")
-            if "blood_bank_status" not in hp_cols:
-                conn.execute("ALTER TABLE hospital_profiles ADD COLUMN blood_bank_status TEXT DEFAULT 'UNKNOWN'")
-            if "is_centroid_coordinates" not in hp_cols:
-                conn.execute("ALTER TABLE hospital_profiles ADD COLUMN is_centroid_coordinates INTEGER DEFAULT 0")
-            if "must_change_password" not in hp_cols:
-                conn.execute("ALTER TABLE hospital_profiles ADD COLUMN must_change_password INTEGER DEFAULT 0")
-            if "initial_password_changed_at" not in hp_cols:
-                conn.execute("ALTER TABLE hospital_profiles ADD COLUMN initial_password_changed_at TEXT")
-    except Exception:
-        pass
+
+    def _add_col(table: str, col: str, col_def: str) -> None:
+        try:
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+            if cols and col not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+        except Exception:
+            pass
+
+    # Column migrations
+    _add_col("donors", "dob", "TEXT")
+    _add_col("donors", "phone", "TEXT")
+    _add_col("donors", "district", "TEXT")
+    _add_col("donors", "taluk", "TEXT")
+    _add_col("donors", "fictional_address", "TEXT")
+    _add_col("donors", "latitude", "REAL")
+    _add_col("donors", "longitude", "REAL")
+    _add_col("donors", "consent", "TEXT")
+    _add_col("donors", "response_time_hrs", "REAL")
+
+    _add_col("appointments", "donor_id", "TEXT")
+    _add_col("appointments", "donor_email", "TEXT")
+    _add_col("appointments", "center_name", "TEXT DEFAULT 'Central Blood Bank Hub #1'")
+    _add_col("appointments", "created_at", "TEXT")
+
+    _add_col("blood_requests", "units_fulfilled", "INTEGER DEFAULT 0")
+    _add_col("blood_requests", "fulfilled_at", "TEXT")
+    _add_col("blood_requests", "hospital_address", "TEXT")
+    _add_col("blood_requests", "contact_phone", "TEXT")
+    _add_col("blood_requests", "created_by_user_id", "INTEGER")
+    _add_col("blood_requests", "district", "TEXT")
+    _add_col("blood_requests", "taluk", "TEXT")
+    _add_col("blood_requests", "latitude", "REAL")
+    _add_col("blood_requests", "longitude", "REAL")
+    _add_col("blood_requests", "destination_latitude", "REAL")
+    _add_col("blood_requests", "destination_longitude", "REAL")
+    _add_col("blood_requests", "hospital_user_id", "INTEGER REFERENCES users(id) ON DELETE SET NULL")
+    _add_col("blood_requests", "assigned_admin_user_id", "INTEGER REFERENCES users(id) ON DELETE SET NULL")
+    _add_col("blood_requests", "assigned_admin_id", "INTEGER NULL")
+
+    _add_col("users", "is_verified", "INTEGER DEFAULT 0")
+    _add_col("users", "verification_token", "TEXT")
+    _add_col("users", "verification_token_expiry", "TEXT")
+    _add_col("users", "last_verification_email_sent_at", "TEXT")
+    _add_col("users", "must_change_password", "INTEGER DEFAULT 0")
+
+    _add_col("hospital_profiles", "contact_email", "TEXT")
+    _add_col("hospital_profiles", "contact_phone", "TEXT")
+    _add_col("hospital_profiles", "category", "TEXT DEFAULT 'General Hospital'")
+    _add_col("hospital_profiles", "has_blood_bank", "INTEGER DEFAULT 0")
+    _add_col("hospital_profiles", "verification_status", "TEXT DEFAULT 'PROVISIONAL'")
+    _add_col("hospital_profiles", "blood_bank_status", "TEXT DEFAULT 'UNKNOWN'")
+    _add_col("hospital_profiles", "is_centroid_coordinates", "INTEGER DEFAULT 0")
+    _add_col("hospital_profiles", "must_change_password", "INTEGER DEFAULT 0")
+    _add_col("hospital_profiles", "initial_password_changed_at", "TEXT")
+
+    _add_col("donation_history", "requisition_id", "INTEGER REFERENCES blood_requests(id)")
+
+    # Ensure indexes exist
+    indexes = [
+        "CREATE INDEX IF NOT EXISTS idx_donors_blood_group ON donors(blood_group);",
+        "CREATE INDEX IF NOT EXISTS idx_donors_district_taluk ON donors(district, taluk);",
+        "CREATE INDEX IF NOT EXISTS idx_users_email ON users(LOWER(email));",
+        "CREATE INDEX IF NOT EXISTS idx_donation_history_donor_id ON donation_history(donor_id);",
+        "CREATE INDEX IF NOT EXISTS idx_donation_history_donor_email ON donation_history(LOWER(donor_email));",
+        "CREATE INDEX IF NOT EXISTS idx_donation_history_hospital ON donation_history(hospital_user_id);",
+        "CREATE INDEX IF NOT EXISTS idx_donation_history_status ON donation_history(status);",
+        "CREATE INDEX IF NOT EXISTS idx_donation_history_date ON donation_history(donation_date DESC);",
+        "CREATE INDEX IF NOT EXISTS idx_donation_history_synthetic ON donation_history(is_synthetic);",
+        "CREATE INDEX IF NOT EXISTS idx_donation_history_cert ON donation_history(UPPER(certificate_code));",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_active_appointment_donor_email ON appointments (LOWER(TRIM(donor_email))) WHERE UPPER(TRIM(status)) IN ('SCHEDULED', 'PENDING', 'CONFIRMED', 'APPROVED');",
+    ]
+    for idx_sql in indexes:
+        try:
+            conn.execute(idx_sql)
+        except Exception:
+            pass
 
     # Baseline seed: Blood inventory
     try:
@@ -781,8 +795,61 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
     except Exception:
         pass
 
+    # Baseline seed: Legacy donations
     try:
-        ensure_admin_account(conn)
+        don_count = conn.execute("SELECT count(*) FROM donations").fetchone()[0]
+        if don_count == 0:
+            conn.executemany("""
+                INSERT OR IGNORE INTO donations (donation_code, donor_email, donor_name, blood_group, units, donation_date, center_name, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, [
+                ('DON-901', 'john.doe@email.com', 'John Doe', 'O+', 1, '2026-03-15', 'Central Blood Bank Hub #1', 'Verified'),
+                ('DON-812', 'john.doe@email.com', 'John Doe', 'O+', 1, '2025-10-18', 'City General Blood Center', 'Verified'),
+                ('DON-705', 'john.doe@email.com', 'John Doe', 'O+', 1, '2025-06-04', 'St. Jude Mobile Drive', 'Verified')
+            ])
+    except Exception:
+        pass
+
+    # Baseline seed: Backfill legacy donations into donation_history
+    try:
+        legacy_donations = conn.execute("""
+            SELECT * FROM donations WHERE UPPER(status) IN ('VERIFIED', 'CONFIRMED')
+        """).fetchall()
+        for l_row in legacy_donations:
+            l_dict = dict(l_row)
+            code = l_dict.get("donation_code")
+            if not code:
+                continue
+            exists = conn.execute(
+                "SELECT id FROM donation_history WHERE UPPER(certificate_code) = UPPER(?)", (code,)
+            ).fetchone()
+            if not exists:
+                d_date = l_dict.get("donation_date") or "2026-01-01"
+                iso_date = f"{d_date}T00:00:00Z"
+                conn.execute("""
+                    INSERT INTO donation_history (
+                        donor_id, donor_code, donor_name, donor_email, blood_group, units,
+                        donation_date, donation_type, hospital_user_id, hospital_name,
+                        appointment_id, status, approved_by_user_id, approval_date, notes,
+                        certificate_code, is_synthetic, created_at, updated_at
+                    ) VALUES (
+                        NULL, 'DNR-1001', ?, ?, ?, ?,
+                        ?, 'Whole Blood', NULL, ?,
+                        NULL, 'CONFIRMED', NULL, ?, 'Legacy verified donation backfilled from donations table',
+                        ?, 0, ?, ?
+                    )
+                """, (
+                    l_dict.get("donor_name", "Unknown Donor"),
+                    l_dict.get("donor_email", ""),
+                    l_dict.get("blood_group", "O+"),
+                    l_dict.get("units") or 1,
+                    d_date,
+                    l_dict.get("center_name", "Central Blood Bank Hub #1"),
+                    iso_date,
+                    code,
+                    iso_date,
+                    iso_date
+                ))
     except Exception:
         pass
 
@@ -795,15 +862,97 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
     except Exception:
         pass
 
+    try:
+        ensure_admin_account(conn)
+    except Exception:
+        pass
+
+    # Baseline seed: Existing donor accounts
+    try:
+        donor_exists = conn.execute(
+            "SELECT id FROM users WHERE LOWER(email) = LOWER(?)", ('ashwinkumarnsrao@gmail.com',)
+        ).fetchone()
+        if not donor_exists:
+            pw_hash = _hash_pbkdf2_admin('12345678')
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO users (name, email, password, phone, role, status, is_verified)
+                VALUES ('Ashwin', 'ashwinkumarnsrao@gmail.com', ?, '9731742855', 'ROLE_DONOR', 'ACTIVE', 1)
+            """, (pw_hash,))
+            u_id = cur.lastrowid
+            conn.execute("""
+                INSERT OR IGNORE INTO donors (
+                    donor_id, name, email, blood_group, age, gender, location, distance_km,
+                    last_donation_days, total_donations, donation_frequency, previous_response_rate,
+                    preferred_time, health_score, availability_status, availability_score, user_id, is_available
+                ) VALUES (
+                    'DNR-1005', 'Ashwin', 'ashwinkumarnsrao@gmail.com', 'A+', 22, 'Male', 'Zone B (North)', 4.0,
+                    180, 0, 2, 0.9, 'Evening', 95, 'HIGH', 91.5, ?, 1
+                )
+            """, (u_id,))
+    except Exception:
+        pass
+
+    try:
+        yash_exists = conn.execute(
+            "SELECT id FROM users WHERE LOWER(email) = LOWER(?)", ('yashwanthkc25@gmail.com',)
+        ).fetchone()
+        if not yash_exists:
+            pw_hash = _hash_pbkdf2_admin('12345678')
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO users (name, email, password, phone, role, status, is_verified)
+                VALUES ('yashwanth', 'yashwanthkc25@gmail.com', ?, '7795393617', 'ROLE_DONOR', 'ACTIVE', 1)
+            """, (pw_hash,))
+            u_id = cur.lastrowid
+            conn.execute("""
+                INSERT OR IGNORE INTO donors (
+                    donor_id, name, email, blood_group, age, gender, location, distance_km,
+                    last_donation_days, total_donations, donation_frequency, previous_response_rate,
+                    preferred_time, health_score, availability_status, availability_score, user_id, is_available
+                ) VALUES (
+                    'DNR-1006', 'yashwanth', 'yashwanthkc25@gmail.com', 'B+', 21, 'Male', 'Zone A (Central)', 4.0,
+                    180, 0, 2, 0.9, 'Evening', 95, 'HIGH', 91.5, ?, 1
+                )
+            """, (u_id,))
+    except Exception:
+        pass
+
+    try:
+        john_exists = conn.execute(
+            "SELECT id FROM donors WHERE LOWER(email) = LOWER(?)", ('john.doe@email.com',)
+        ).fetchone()
+        if not john_exists:
+            conn.execute("""
+                INSERT OR IGNORE INTO donors (
+                    donor_id, name, email, blood_group, age, gender, location, distance_km,
+                    last_donation_days, total_donations, donation_frequency, previous_response_rate,
+                    preferred_time, health_score, availability_status, availability_score, is_available
+                ) VALUES (
+                    'DNR-1001', 'John Doe', 'john.doe@email.com', 'O+', 29, 'Male', 'Zone A (Central)', 3.5,
+                    150, 4, 3, 0.95, 'Morning', 98, 'HIGH', 94.5, 1
+                )
+            """)
+    except Exception:
+        pass
+
     conn.commit()
 
 
 def ensure_sqlite_db_ready(db_path: str | None = None) -> None:
     """Ensures the SQLite database file exists and has all 14 tables with baseline data."""
+    import shutil
     path = db_path or (os.getenv("BLOODBANK_DB_FILE") or DATABASE_PATH)
     dir_name = os.path.dirname(os.path.abspath(path))
     if dir_name:
         os.makedirs(dir_name, exist_ok=True)
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        backup_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bloodbank_backup.db")
+        if os.path.exists(backup_path):
+            try:
+                shutil.copyfile(backup_path, path)
+            except Exception:
+                pass
     conn = sqlite3.connect(path, check_same_thread=False, timeout=30.0)
     conn.row_factory = sqlite3.Row
     _migrate_sqlite(conn)

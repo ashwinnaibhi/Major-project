@@ -300,14 +300,6 @@ export default function AdminDashboard({ onNavigate, donorsList = [], requestsLi
           <h2 className="text-2xl font-black text-white tracking-tight">Blood Bank Admin Directory & Record Manager</h2>
           <p className="text-xs text-slate-400 mt-1">View comprehensive donor donation history, ML availability scores, health metrics, and manage SQL records.</p>
         </div>
-
-        <button
-          onClick={() => onNavigate('emergency')}
-          className="flex items-center space-x-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-blood-600 to-blood-700 hover:from-blood-500 hover:to-blood-600 text-white font-semibold text-xs shadow-lg glow-red transition-all"
-        >
-          <AlertOctagon className="w-4 h-4" />
-          <span>Launch Emergency Donor Search</span>
-        </button>
       </div>
 
       {/* Metric Stat Cards */}

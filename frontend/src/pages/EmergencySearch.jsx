@@ -13,17 +13,27 @@ const EmergencySearch = ({ currentUser }) => {
   const [alertError, setAlertError] = useState('');
   const [hasSearched, setHasSearched] = useState(false);
 
+  const isHospital = Boolean(
+    currentUser?.token &&
+    currentUser?.isLoggedIn &&
+    ['HOSPITAL', 'ROLE_HOSPITAL'].includes(String(currentUser?.role || '').toUpperCase())
+  );
+
   const token = currentUser?.token || localStorage.getItem('token');
   const API_BASE = getApiBaseUrl();
 
   const handleSearch = async (e) => {
     if (e) e.preventDefault();
+    if (!token || !isHospital) {
+      setAlertError('Authenticated hospital account required.');
+      return;
+    }
     setLoading(true);
     setAlertSuccess('');
     setAlertError('');
     setHasSearched(true);
     try {
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const headers = { Authorization: `Bearer ${token}` };
       const res = await axios.get(`${API_BASE}/api/donors/emergency-search`, {
         params: { blood_group: bloodGroup },
         headers
@@ -53,8 +63,8 @@ const EmergencySearch = ({ currentUser }) => {
       setAlertError('Please select at least one donor to alert.');
       return;
     }
-    if (!token) {
-      setAlertError('Sign in with an authorized hospital or administrator account to broadcast emergency alerts.');
+    if (!token || !isHospital) {
+      setAlertError('Sign in with an authorized hospital account to broadcast emergency alerts.');
       return;
     }
     setAlertError('');
@@ -72,6 +82,24 @@ const EmergencySearch = ({ currentUser }) => {
       setAlertError(err.response?.data?.detail || 'Failed to dispatch emergency alerts.');
     }
   };
+
+  if (!isHospital) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[50vh] p-6">
+        <div className="w-full max-w-md p-6 rounded-2xl glass-panel border border-slate-800 text-center space-y-4 bg-slate-950/80 shadow-2xl">
+          <div className="w-12 h-12 rounded-2xl bg-amber-950/80 border border-amber-800 flex items-center justify-center text-amber-400 mx-auto">
+            <ShieldAlert className="w-6 h-6" />
+          </div>
+          <div>
+            <h3 className="text-base font-bold text-white">Access Restricted</h3>
+            <p className="text-xs text-slate-400 mt-1">
+              Emergency Donor Search &amp; Alert is restricted to authenticated Hospital accounts only.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

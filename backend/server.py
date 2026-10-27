@@ -1322,12 +1322,17 @@ def verify_admin_session(user: dict = Depends(get_current_user)):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/donors/emergency-search")
+@app.get("/api/v1/donors/emergency-search")
 def emergency_donor_search(
     blood_group: str = Query(...),
     max_distance_km: Optional[float] = Query(50.0),
-    authorization: Optional[str] = Header(None),
+    user: dict = Depends(get_current_user),
     conn: sqlite3.Connection = Depends(get_db),
 ):
+    role = str(user.get("role", "")).upper()
+    if role not in ("ROLE_HOSPITAL", "HOSPITAL"):
+        raise HTTPException(status_code=403, detail="Hospital access required")
+
     bg_clean = blood_group.replace(" ", "+").strip().upper()
     if bg_clean not in BLOOD_COMPATIBILITY:
         raise HTTPException(status_code=400, detail=f"Invalid blood group: {blood_group}")
@@ -1335,42 +1340,22 @@ def emergency_donor_search(
     compatible_groups = BLOOD_COMPATIBILITY[bg_clean]
     placeholders = ",".join(["?"] * len(compatible_groups))
 
-    # Determine hospital context from JWT
+    # Determine hospital context from authenticated hospital account
     h_taluk = None
     h_district = None
-    h_name = "Requesting Facility"
+    h_name = user.get("name") or "Hospital"
     h_lat = None
     h_lon = None
 
-    if authorization and authorization.startswith("Bearer "):
-        token = authorization.split(" ", 1)[1]
-        payload = decode_token(token)
-        if payload:
-            sub = payload.get("sub")
-            uid = payload.get("id")
-            user = None
-            if uid:
-                try:
-                    user = conn.execute("SELECT id, role FROM users WHERE id = ?", (int(uid),)).fetchone()
-                except Exception:
-                    pass
-            if not user and sub:
-                try:
-                    user = conn.execute("SELECT id, role FROM users WHERE id = ?", (int(sub),)).fetchone()
-                except Exception:
-                    user = conn.execute(
-                        "SELECT id, role FROM users WHERE LOWER(email) = LOWER(?)", (str(sub),)
-                    ).fetchone()
-            if user and dict(user).get("role") == "ROLE_HOSPITAL":
-                hosp = conn.execute(
-                    "SELECT * FROM hospital_profiles WHERE hospital_user_id = ?", (user["id"],)
-                ).fetchone()
-                if hosp:
-                    h_taluk = hosp["taluk"]
-                    h_district = hosp["district"]
-                    h_name = hosp["hospital_name"] or "Hospital"
-                    h_lat = hosp["latitude"]
-                    h_lon = hosp["longitude"]
+    hosp = conn.execute(
+        "SELECT * FROM hospital_profiles WHERE hospital_user_id = ?", (user["id"],)
+    ).fetchone()
+    if hosp:
+        h_taluk = hosp["taluk"]
+        h_district = hosp["district"]
+        h_name = hosp["hospital_name"] or user.get("name") or "Hospital"
+        h_lat = hosp["latitude"]
+        h_lon = hosp["longitude"]
 
     query = f"""
         SELECT id, name, blood_group, phone, district, taluk, is_available,
@@ -1415,9 +1400,14 @@ def emergency_donor_search(
 
 
 @app.post("/api/donors/emergency-alert")
+@app.post("/api/v1/donors/emergency-alert")
 def send_emergency_alerts(payload: EmergencyAlertPayload,
                           user: dict = Depends(get_current_user),
                           conn: sqlite3.Connection = Depends(get_db)):
+    role = str(user.get("role", "")).upper()
+    if role not in ("ROLE_HOSPITAL", "HOSPITAL"):
+        raise HTTPException(status_code=403, detail="Hospital access required")
+
     if not payload.donor_ids:
         raise HTTPException(status_code=400, detail="No donors selected")
 
@@ -3156,7 +3146,13 @@ def _run_prediction(req: MLPredictionRequest):
 
 @app.post("/predict-availability")
 @app.post("/api/v1/predict-availability")
-def predict_blood_availability(req: MLPredictionRequest):
+def predict_blood_availability(
+    req: MLPredictionRequest,
+    user: dict = Depends(get_current_user),
+):
+    role = str(user.get("role", "")).upper()
+    if role not in ("ROLE_HOSPITAL", "HOSPITAL"):
+        raise HTTPException(status_code=403, detail="Hospital access required")
     return _run_prediction(req)
 
 

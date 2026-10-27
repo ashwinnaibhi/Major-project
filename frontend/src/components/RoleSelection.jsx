@@ -27,20 +27,20 @@ export default function RoleSelection({ onSelectRole }) {
       iconColor: 'bg-sky-700 text-white',
       accentColor: 'hover:border-sky-600',
       buttonText: 'Access Hospital Desk',
-      features: ['Emergency requisitions', 'Hospital inventory tracking', 'Transfusion verification']
+      features: ['Emergency requisitions & donor search', 'ML availability simulator', 'Hospital inventory tracking']
     },
     {
       id: 'ADMIN',
       title: 'System Administrator Desk',
       subtitle: 'For blood bank coordinators & staff',
-      description: 'Supervise donor registries, inspect machine learning predictions, manage inventory stock, and oversee system requisitions.',
+      description: 'Supervise donor registries, verify donations, manage inventory stock, and oversee system requisitions.',
       icon: ShieldAlert,
       badge: 'Authorized Staff',
       badgeColor: 'bg-amber-950 text-amber-400 border-amber-800',
       iconColor: 'bg-amber-700 text-white',
       accentColor: 'hover:border-amber-600',
       buttonText: 'Access Admin Desk',
-      features: ['Full donor registry', 'ML predictive simulation', 'System-wide analytics']
+      features: ['Full donor registry', 'Central inventory control', 'System-wide analytics']
     }
   ];
 

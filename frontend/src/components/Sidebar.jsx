@@ -10,6 +10,13 @@ export default function Sidebar({ activeTab, setActiveTab, activeRole, currentUs
     currentUser?.isLoggedIn &&
     ['ADMIN', 'ROLE_ADMIN'].includes(String(currentUser?.role || '').toUpperCase().replace(/^ROLE_/, ''))
   );
+
+  const isHospital = Boolean(
+    currentUser?.token &&
+    currentUser?.isLoggedIn &&
+    ['HOSPITAL', 'ROLE_HOSPITAL'].includes(String(currentUser?.role || '').toUpperCase())
+  );
+
   // Navigation for DONOR role
   const donorNavItems = [
     { id: 'donor_dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -19,17 +26,29 @@ export default function Sidebar({ activeTab, setActiveTab, activeRole, currentUs
     { id: 'donor_notifications', label: 'Notifications', icon: Bell, badge: 'Alerts' },
   ];
 
-  // Standard Management Navigation for ADMIN, HOSPITAL, STAFF
-  const defaultNavItems = [
+  // Navigation for HOSPITAL role (ML Simulator and Emergency Search are restricted to authenticated hospitals)
+  const hospitalNavItems = [
     { id: 'dashboard', label: 'Dashboard & Analytics', icon: LayoutDashboard },
-    { id: 'emergency', label: 'Emergency Donor Search', icon: Search, badge: 'Live ML' },
-    { id: 'ml_predictor', label: 'ML Availability Simulator', icon: BrainCircuit },
+    ...(isHospital ? [
+      { id: 'emergency', label: 'Emergency Donor Search', icon: Search, badge: 'Live ML' },
+      { id: 'ml_predictor', label: 'ML Availability Simulator', icon: BrainCircuit },
+    ] : []),
     { id: 'inventory', label: 'Blood Inventory Stock', icon: Database },
     { id: 'requests', label: 'Hospital Requests', icon: FileText },
     { id: 'appointments', label: 'Appointments Calendar', icon: CalendarCheck },
   ];
 
-  const navItems = activeRole === 'DONOR' ? donorNavItems : defaultNavItems;
+  // Standard Management Navigation for ADMIN and STAFF (Emergency Search & ML Simulator hidden)
+  const adminOrStaffNavItems = [
+    { id: 'dashboard', label: 'Dashboard & Analytics', icon: LayoutDashboard },
+    { id: 'inventory', label: 'Blood Inventory Stock', icon: Database },
+    { id: 'requests', label: 'Hospital Requests', icon: FileText },
+    { id: 'appointments', label: 'Appointments Calendar', icon: CalendarCheck },
+  ];
+
+  const navItems = activeRole === 'DONOR'
+    ? donorNavItems
+    : (activeRole === 'HOSPITAL' ? hospitalNavItems : adminOrStaffNavItems);
 
   return (
     <aside className="w-64 glass-panel border-r border-slate-800 min-h-[calc(100vh-65px)] p-4 flex flex-col justify-between">

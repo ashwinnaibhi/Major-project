@@ -253,6 +253,12 @@ export default function App() {
 
   // Render Page Content
   const renderContent = () => {
+    const isHospital = Boolean(
+      currentUser?.token &&
+      currentUser?.isLoggedIn &&
+      ['HOSPITAL', 'ROLE_HOSPITAL'].includes(String(currentUser?.role || '').toUpperCase())
+    );
+
     // Role selection screen after logout or portal navigation
     if (activeTab === 'role_select') {
       return (
@@ -282,10 +288,7 @@ export default function App() {
     switch (activeTab) {
       case 'dashboard':
         if (activeRole === 'HOSPITAL') {
-          const isHospitalOrAdmin = ['HOSPITAL', 'ROLE_HOSPITAL', 'ADMIN', 'ROLE_ADMIN'].includes(
-            String(currentUser?.role || '').toUpperCase()
-          );
-          if (!isHospitalOrAdmin) {
+          if (!isHospital) {
             return (
               <HospitalAuth
                 onAuthSuccess={handleAuthSuccess}
@@ -324,9 +327,43 @@ export default function App() {
         );
 
       case 'emergency':
+        if (!isHospital) {
+          return (
+            <div className="flex flex-col items-center justify-center min-h-[50vh] p-6">
+              <div className="w-full max-w-md p-6 rounded-2xl glass-panel border border-slate-800 text-center space-y-4 bg-slate-950/80 shadow-2xl">
+                <div className="w-12 h-12 rounded-2xl bg-amber-950/80 border border-amber-800 flex items-center justify-center text-amber-400 mx-auto">
+                  <ShieldAlert className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Access Restricted</h3>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Emergency Donor Search &amp; Alert is restricted to authenticated Hospital accounts only.
+                  </p>
+                </div>
+              </div>
+            </div>
+          );
+        }
         return <EmergencySearch donorsList={donorsList} requestsList={requestsList} currentUser={currentUser} activeRole={activeRole} />;
       case 'ml_predictor':
-        return <MLPredictorView />;
+        if (!isHospital) {
+          return (
+            <div className="flex flex-col items-center justify-center min-h-[50vh] p-6">
+              <div className="w-full max-w-md p-6 rounded-2xl glass-panel border border-slate-800 text-center space-y-4 bg-slate-950/80 shadow-2xl">
+                <div className="w-12 h-12 rounded-2xl bg-amber-950/80 border border-amber-800 flex items-center justify-center text-amber-400 mx-auto">
+                  <ShieldAlert className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Access Restricted</h3>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Hospital ML Availability Simulator is restricted to authenticated Hospital accounts only.
+                  </p>
+                </div>
+              </div>
+            </div>
+          );
+        }
+        return <MLPredictorView currentUser={currentUser} />;
       case 'inventory':
         return <InventoryView currentUser={currentUser} />;
       case 'requests':

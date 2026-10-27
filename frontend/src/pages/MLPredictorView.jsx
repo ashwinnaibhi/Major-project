@@ -1,9 +1,16 @@
 import React, { useState } from 'react';
 import { getMlServiceUrl } from '../api/config';
 import axios from 'axios';
-import { Cpu, CheckCircle, AlertTriangle, Info, BrainCircuit } from 'lucide-react';
+import { Cpu, CheckCircle, AlertTriangle, Info, BrainCircuit, ShieldAlert } from 'lucide-react';
 
-const MLPredictorView = () => {
+const MLPredictorView = ({ currentUser }) => {
+  const isHospital = Boolean(
+    currentUser?.token &&
+    currentUser?.isLoggedIn &&
+    ['HOSPITAL', 'ROLE_HOSPITAL'].includes(String(currentUser?.role || '').toUpperCase())
+  );
+
+  const token = currentUser?.token || localStorage.getItem('token');
   const [formData, setFormData] = useState({
     taluk: 'Koppa',
     district: 'Chikkamagaluru',
@@ -19,18 +26,23 @@ const MLPredictorView = () => {
 
   const handlePredict = async (e) => {
     e.preventDefault();
+    if (!token || !isHospital) {
+      setError('Authenticated hospital account required.');
+      return;
+    }
     setLoading(true);
     setError('');
     setPrediction(null);
 
     try {
+      const headers = { Authorization: `Bearer ${token}` };
       const res = await axios.post(`${ML_SERVICE_URL}/predict-availability`, {
         taluk: formData.taluk,
         district: formData.district,
         blood_group: formData.blood_group,
         units_requested: parseInt(formData.units_requested, 10),
         urgency_level: formData.urgency_level
-      });
+      }, { headers });
       setPrediction(res.data);
     } catch (err) {
       setError(err.response?.data?.detail || 'Prediction service temporarily unavailable.');
@@ -38,6 +50,24 @@ const MLPredictorView = () => {
       setLoading(false);
     }
   };
+
+  if (!isHospital) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[50vh] p-6">
+        <div className="w-full max-w-md p-6 rounded-2xl glass-panel border border-slate-800 text-center space-y-4 bg-slate-950/80 shadow-2xl">
+          <div className="w-12 h-12 rounded-2xl bg-amber-950/80 border border-amber-800 flex items-center justify-center text-amber-400 mx-auto">
+            <ShieldAlert className="w-6 h-6" />
+          </div>
+          <div>
+            <h3 className="text-base font-bold text-white">Access Restricted</h3>
+            <p className="text-xs text-slate-400 mt-1">
+              Hospital ML Availability Simulator is restricted to authenticated Hospital accounts only.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

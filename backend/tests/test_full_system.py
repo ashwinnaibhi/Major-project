@@ -22,6 +22,9 @@ class FullSystemIntegrationTestCase(unittest.TestCase):
         cls.temp_dir = tempfile.mkdtemp()
         cls.test_db = os.path.join(cls.temp_dir, "test_bloodbank.db")
         original_db = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bloodbank.db")
+        if not os.path.exists(original_db):
+            import database
+            database.ensure_sqlite_db_ready(original_db)
         shutil.copyfile(original_db, cls.test_db)
         os.environ["BLOODBANK_DB_FILE"] = cls.test_db
         server.DATABASE_PATH = cls.test_db
@@ -73,7 +76,7 @@ class FullSystemIntegrationTestCase(unittest.TestCase):
             self.assertEqual(res.headers.get("access-control-allow-origin"), origin)
 
     def test_04_ml_prediction_and_metrics_endpoints(self):
-        """Verify blood availability prediction and metrics work directly in backend."""
+        """Verify blood availability prediction requires hospital auth and metrics works."""
         payload = {
             "taluk": "Koppa",
             "district": "Chikmagalur",
@@ -81,7 +84,17 @@ class FullSystemIntegrationTestCase(unittest.TestCase):
             "units_requested": 2,
             "urgency_level": "High"
         }
-        res_pred = self.client.post("/predict-availability", json=payload)
+        # Unauthenticated request is rejected with 401
+        res_unauth = self.client.post("/predict-availability", json=payload)
+        self.assertEqual(res_unauth.status_code, 401)
+
+        # Authenticated hospital request succeeds
+        hosp_token = server.create_access_token({"sub": "3", "id": 3, "role": "ROLE_HOSPITAL"})
+        res_pred = self.client.post(
+            "/predict-availability",
+            json=payload,
+            headers={"Authorization": f"Bearer {hosp_token}"}
+        )
         self.assertEqual(res_pred.status_code, 200)
         pred_data = res_pred.json()
         self.assertIn("is_available", pred_data)
@@ -160,7 +173,16 @@ class FullSystemIntegrationTestCase(unittest.TestCase):
         loc_data = res_loc.json()
         self.assertIn("districts", loc_data)
 
-        res_em = self.client.get("/api/donors/emergency-search?blood_group=A%2B&urgency=HIGH")
+        # Unauthenticated emergency search should be rejected
+        res_unauth = self.client.get("/api/donors/emergency-search?blood_group=A%2B&urgency=HIGH")
+        self.assertEqual(res_unauth.status_code, 401)
+
+        # Authenticated hospital emergency search should succeed
+        hosp_token = server.create_access_token({"sub": "3", "id": 3, "role": "ROLE_HOSPITAL"})
+        res_em = self.client.get(
+            "/api/donors/emergency-search?blood_group=A%2B&urgency=HIGH",
+            headers={"Authorization": f"Bearer {hosp_token}"}
+        )
         self.assertEqual(res_em.status_code, 200)
         em_data = res_em.json()
         self.assertIn("donors", em_data)

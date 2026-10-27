@@ -204,6 +204,32 @@ def provision_all_hospitals(initial_password: str = DEFAULT_INITIAL_PASSWORD, dr
             """, (u3_id, contact_email, must_change, now_iso, now_iso))
         results["migrated"].append({"id": u3_id, "username": target_username, "contact_email": contact_email})
         results["preserved_accounts"].append({"id": u3_id, "username": target_username, "name": "General Hospital Koppa"})
+    else:
+        target_username = "koppa_ghpc@haemopulse.in"
+        contact_email = "ashwinkumarns1995@gmail.com"
+        pw_hash = hash_password(initial_password)
+        cur = conn.cursor()
+        id3_taken = conn.execute("SELECT id FROM users WHERE id = 3").fetchone()
+        if not id3_taken:
+            cur.execute("""
+                INSERT INTO users (id, name, email, password, phone, role, status, is_verified, must_change_password)
+                VALUES (3, 'General Hospital Koppa', ?, ?, '08265-221234', 'ROLE_HOSPITAL', 'ACTIVE', 1, 1)
+            """, (target_username, pw_hash))
+            u3_id = 3
+        else:
+            cur.execute("""
+                INSERT INTO users (name, email, password, phone, role, status, is_verified, must_change_password)
+                VALUES ('General Hospital Koppa', ?, ?, '08265-221234', 'ROLE_HOSPITAL', 'ACTIVE', 1, 1)
+            """, (target_username, pw_hash))
+            u3_id = cur.lastrowid
+        conn.execute("""
+            INSERT INTO hospital_profiles
+            (hospital_user_id, hospital_name, address, district, taluk, latitude, longitude, contact_email, contact_phone, category, has_blood_bank, verification_status, blood_bank_status, is_centroid_coordinates, must_change_password, created_at, updated_at)
+            VALUES (?, 'General Hospital Koppa', 'Hospital Road, Koppa, Chikmagalur - 577126', 'Chikkamagaluru', 'Koppa', 13.5333, 75.3667, ?, '08265-221234', 'Taluk Hospital', 1, 'VERIFIED', 'VERIFIED', 0, 1, ?, ?)
+        """, (u3_id, contact_email, now_iso, now_iso))
+        user_3 = conn.execute("SELECT * FROM users WHERE id = ?", (u3_id,)).fetchone()
+        results["migrated"].append({"id": u3_id, "username": target_username, "contact_email": contact_email})
+        results["preserved_accounts"].append({"id": u3_id, "username": target_username, "name": "General Hospital Koppa"})
 
     # 2. Migrate / Preserve User ID 16 (Koppa NR Pura)
     user_16 = conn.execute("""
@@ -249,6 +275,32 @@ def provision_all_hospitals(initial_password: str = DEFAULT_INITIAL_PASSWORD, dr
                     updated_at = ?
                 WHERE hospital_user_id = ?
             """, (contact_email, must_change, now_iso, u16_id))
+        results["migrated"].append({"id": u16_id, "username": target_username, "contact_email": contact_email})
+        results["preserved_accounts"].append({"id": u16_id, "username": target_username, "name": "Koppa NR Pura"})
+    else:
+        target_username = "koppa_nrpura@haemopulse.in"
+        contact_email = "venka.naibhi@gmail.com"
+        pw_hash = hash_password(initial_password)
+        cur = conn.cursor()
+        id16_taken = conn.execute("SELECT id FROM users WHERE id = 16").fetchone()
+        if not id16_taken:
+            cur.execute("""
+                INSERT INTO users (id, name, email, password, phone, role, status, is_verified, must_change_password)
+                VALUES (16, 'Koppa NR Pura', ?, ?, '08265-221999', 'ROLE_HOSPITAL', 'ACTIVE', 1, 1)
+            """, (target_username, pw_hash))
+            u16_id = 16
+        else:
+            cur.execute("""
+                INSERT INTO users (name, email, password, phone, role, status, is_verified, must_change_password)
+                VALUES ('Koppa NR Pura', ?, ?, '08265-221999', 'ROLE_HOSPITAL', 'ACTIVE', 1, 1)
+            """, (target_username, pw_hash))
+            u16_id = cur.lastrowid
+        conn.execute("""
+            INSERT INTO hospital_profiles
+            (hospital_user_id, hospital_name, address, district, taluk, latitude, longitude, contact_email, contact_phone, category, has_blood_bank, verification_status, blood_bank_status, is_centroid_coordinates, must_change_password, created_at, updated_at)
+            VALUES (?, 'Koppa NR Pura', 'NR Pura Road, Koppa, Chikmagalur - 577126', 'Chikkamagaluru', 'Koppa', 13.5333, 75.3667, ?, '08265-221999', 'Taluk Hospital', 1, 'VERIFIED', 'VERIFIED', 0, 1, ?, ?)
+        """, (u16_id, contact_email, now_iso, now_iso))
+        user_16 = conn.execute("SELECT * FROM users WHERE id = ?", (u16_id,)).fetchone()
         results["migrated"].append({"id": u16_id, "username": target_username, "contact_email": contact_email})
         results["preserved_accounts"].append({"id": u16_id, "username": target_username, "name": "Koppa NR Pura"})
 
