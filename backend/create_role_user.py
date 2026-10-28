@@ -84,9 +84,15 @@ def provision_user(role_name: str | None = None, name: str = "", email: str = ""
                     (hashed_pw, existing["id"])
                 )
                 if clean_role == "ROLE_ADMIN":
+                    designated_admin = getattr(database, "DESIGNATED_ADMIN_EMAIL", "admin@haemopulse.in")
                     conn.execute(
-                        "UPDATE users SET role = 'ROLE_DISABLED', status = 'DISABLED' WHERE role = 'ROLE_ADMIN' AND LOWER(email) != LOWER(?)",
-                        (clean_email,)
+                        """UPDATE users
+                           SET role = 'ROLE_DISABLED', status = 'DISABLED'
+                           WHERE role = 'ROLE_ADMIN'
+                             AND LOWER(email) != LOWER(?)
+                             AND LOWER(email) != LOWER(?)
+                             AND LOWER(email) != 'ashwinkumarnsrao@gmail.com'""",
+                        (clean_email, designated_admin)
                     )
                 conn.commit()
                 print(f"Successfully updated credentials for existing {clean_role} account {clean_email}.")
@@ -97,9 +103,15 @@ def provision_user(role_name: str | None = None, name: str = "", email: str = ""
                     "UPDATE users SET password = ?, role = 'ROLE_ADMIN', is_verified = 1, status = 'ACTIVE' WHERE id = ?",
                     (hashed_pw, existing["id"])
                 )
+                designated_admin = getattr(database, "DESIGNATED_ADMIN_EMAIL", "admin@haemopulse.in")
                 conn.execute(
-                    "UPDATE users SET role = 'ROLE_DISABLED', status = 'DISABLED' WHERE role = 'ROLE_ADMIN' AND LOWER(email) != LOWER(?)",
-                    (clean_email,)
+                    """UPDATE users
+                       SET role = 'ROLE_DISABLED', status = 'DISABLED'
+                       WHERE role = 'ROLE_ADMIN'
+                         AND LOWER(email) != LOWER(?)
+                         AND LOWER(email) != LOWER(?)
+                         AND LOWER(email) != 'ashwinkumarnsrao@gmail.com'""",
+                    (clean_email, designated_admin)
                 )
                 conn.commit()
                 print(f"Successfully provisioned/updated credentials for ROLE_ADMIN account {clean_email}.")
@@ -114,9 +126,15 @@ def provision_user(role_name: str | None = None, name: str = "", email: str = ""
             VALUES (?, ?, ?, ?, ?, 1, 'ACTIVE')
         """, (clean_name, clean_email, hashed_pw, phone.strip(), clean_role))
         if clean_role == "ROLE_ADMIN":
+            designated_admin = getattr(database, "DESIGNATED_ADMIN_EMAIL", "admin@haemopulse.in")
             conn.execute(
-                "UPDATE users SET role = 'ROLE_DISABLED', status = 'DISABLED' WHERE role = 'ROLE_ADMIN' AND LOWER(email) != LOWER(?)",
-                (clean_email,)
+                """UPDATE users
+                   SET role = 'ROLE_DISABLED', status = 'DISABLED'
+                   WHERE role = 'ROLE_ADMIN'
+                     AND LOWER(email) != LOWER(?)
+                     AND LOWER(email) != LOWER(?)
+                     AND LOWER(email) != 'ashwinkumarnsrao@gmail.com'""",
+                (clean_email, designated_admin)
             )
         conn.commit()
         print(f"Successfully provisioned {clean_role} account for {clean_email}.")

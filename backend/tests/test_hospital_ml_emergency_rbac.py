@@ -38,10 +38,15 @@ class HospitalMLEmergencyRBACTestCase(unittest.TestCase):
         server.DATABASE_PATH = cls.test_db
         cls.client = TestClient(server.app)
 
+        conn = database.get_db_connection()
+        admin_row = conn.execute("SELECT id FROM users WHERE LOWER(email) = 'admin@haemopulse.in'").fetchone()
+        admin_id = admin_row["id"] if admin_row else 256
+        conn.close()
+
         # Tokens for each role
         cls.hospital_token = server.create_access_token({"sub": "3", "id": 3, "role": "ROLE_HOSPITAL"})
-        cls.donor_token = server.create_access_token({"sub": "2", "id": 2, "role": "ROLE_DONOR"})
-        cls.admin_token = server.create_access_token({"sub": "1", "id": 1, "role": "ROLE_ADMIN"})
+        cls.donor_token = server.create_access_token({"sub": "1", "id": 1, "role": "ROLE_DONOR"})
+        cls.admin_token = server.create_access_token({"sub": str(admin_id), "id": admin_id, "role": "ROLE_ADMIN"})
 
     @classmethod
     def tearDownClass(cls):
