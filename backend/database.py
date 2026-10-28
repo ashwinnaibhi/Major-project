@@ -1039,14 +1039,27 @@ def ensure_admin_account(conn: Any = None) -> dict[str, Any]:
                 update_fields = ["role = 'ROLE_ADMIN'", "status = 'ACTIVE'", "is_verified = 1"]
                 params: list[Any] = []
 
-                if force_reset and (env_hash or env_pw):
+                LEGACY_DEFAULT_ADMIN_PASSWORD_HASHES = {
+                    "pbkdf2_sha256$310000$3b8348412b9b0270e8c8af77088a42a6$2bad50a1e21b706c5a0e5d6dc5e71c08fb58289e58ee35b4b5f76f8bbf448458",
+                    "some_hash",
+                    "",
+                }
+                stored_pw = str(u_dict.get("password") or "").strip()
+
+                if force_reset:
                     if env_hash and env_hash.startswith("pbkdf2_"):
                         update_fields.append("password = ?")
                         params.append(env_hash)
                     elif env_pw and len(env_pw) >= 8:
                         update_fields.append("password = ?")
                         params.append(_hash_pbkdf2_admin(env_pw))
-                elif not u_dict.get("password"):
+                    else:
+                        update_fields.append("password = ?")
+                        params.append(DEFAULT_ADMIN_PASSWORD_HASH)
+                elif env_pw and len(env_pw) >= 8 and (stored_pw in LEGACY_DEFAULT_ADMIN_PASSWORD_HASHES or os.getenv("ADMIN_INITIAL_PASSWORD")):
+                    update_fields.append("password = ?")
+                    params.append(_hash_pbkdf2_admin(env_pw))
+                elif stored_pw in LEGACY_DEFAULT_ADMIN_PASSWORD_HASHES:
                     update_fields.append("password = ?")
                     params.append(DEFAULT_ADMIN_PASSWORD_HASH)
 
