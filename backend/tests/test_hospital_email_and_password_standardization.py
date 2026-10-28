@@ -274,19 +274,33 @@ class TestHospitalEmailAndPasswordStandardization(unittest.TestCase):
         conn = database.get_db_connection()
         admin_row = conn.execute("SELECT email, role FROM users WHERE role = 'ROLE_ADMIN'").fetchone()
         self.assertIsNotNone(admin_row)
+        self.assertEqual(admin_row["email"].lower(), "ashwinkumarnsrao@gmail.com")
 
-        donor_row = conn.execute("SELECT email, role FROM users WHERE LOWER(email) = 'ashwinkumarnsrao@gmail.com'").fetchone()
+        donor_row = conn.execute("SELECT email, role FROM users WHERE LOWER(email) = 'yashwanthkc25@gmail.com'").fetchone()
         self.assertIsNotNone(donor_row)
         conn.close()
 
+        # Admin can authenticate with admin password
+        res_a = self.client.post("/api/v1/auth/login", json={
+            "email": "ashwinkumarnsrao@gmail.com",
+            "password": "password123"
+        })
+        if res_a.status_code != 200:
+            res_a = self.client.post("/api/v1/auth/login", json={
+                "email": "ashwinkumarnsrao@gmail.com",
+                "password": "12345678"
+            })
+        self.assertEqual(res_a.status_code, 200)
+        self.assertEqual(res_a.json()["role"], "ROLE_ADMIN")
+
         # Donor can still authenticate with donor password
         res_d = self.client.post("/api/v1/auth/login", json={
-            "email": "ashwinkumarnsrao@gmail.com",
+            "email": "yashwanthkc25@gmail.com",
             "password": "password123"
         })
         if res_d.status_code != 200:
             res_d = self.client.post("/api/v1/auth/login", json={
-                "email": "ashwinkumarnsrao@gmail.com",
+                "email": "yashwanthkc25@gmail.com",
                 "password": "12345678"
             })
         self.assertEqual(res_d.status_code, 200)

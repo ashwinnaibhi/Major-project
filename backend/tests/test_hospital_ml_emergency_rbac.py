@@ -40,8 +40,8 @@ class HospitalMLEmergencyRBACTestCase(unittest.TestCase):
 
         # Tokens for each role
         cls.hospital_token = server.create_access_token({"sub": "3", "id": 3, "role": "ROLE_HOSPITAL"})
-        cls.donor_token = server.create_access_token({"sub": "1", "id": 1, "role": "ROLE_DONOR"})
-        cls.admin_token = server.create_access_token({"sub": "256", "id": 256, "role": "ROLE_ADMIN"})
+        cls.donor_token = server.create_access_token({"sub": "2", "id": 2, "role": "ROLE_DONOR"})
+        cls.admin_token = server.create_access_token({"sub": "1", "id": 1, "role": "ROLE_ADMIN"})
 
     @classmethod
     def tearDownClass(cls):

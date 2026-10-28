@@ -889,7 +889,7 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
             cur = conn.cursor()
             cur.execute("""
                 INSERT INTO users (name, email, password, phone, role, status, is_verified)
-                VALUES ('Ashwin', 'ashwinkumarnsrao@gmail.com', ?, '9731742855', 'ROLE_DONOR', 'ACTIVE', 1)
+                VALUES ('Ashwin', 'ashwinkumarnsrao@gmail.com', ?, '9731742855', 'ROLE_ADMIN', 'ACTIVE', 1)
             """, (pw_hash,))
             u_id = cur.lastrowid
             conn.execute("""
@@ -971,10 +971,18 @@ def ensure_sqlite_db_ready(db_path: str | None = None) -> None:
     conn.close()
 
 
-DESIGNATED_ADMIN_EMAIL = "admin@haemopulse.in"
+DESIGNATED_ADMIN_EMAIL = "ashwinkumarnsrao@gmail.com"
 DEFAULT_ADMIN_PASSWORD_HASH = (
     "pbkdf2_sha256$310000$3b8348412b9b0270e8c8af77088a42a6$2bad50a1e21b706c5a0e5d6dc5e71c08fb58289e58ee35b4b5f76f8bbf448458"
 )
+
+
+def get_designated_admin_email() -> str:
+    """Returns the single authoritative administrator email address."""
+    env_admin = (os.getenv("ADMIN_EMAIL") or "").strip().lower()
+    if env_admin and "@" in env_admin:
+        return env_admin
+    return DESIGNATED_ADMIN_EMAIL
 
 
 def _hash_pbkdf2_admin(password: str) -> str:
@@ -985,11 +993,12 @@ def _hash_pbkdf2_admin(password: str) -> str:
 
 
 def ensure_admin_account(conn: Any = None) -> dict[str, Any]:
-    """Ensures the single designated administrator account (admin@haemopulse.in) exists.
+    """Ensures the single designated administrator account (ashwinkumarnsrao@gmail.com) exists.
     - Idempotent: does NOT reset or overwrite an existing administrator password on restart.
     - Preserves existing administrator credentials / password hash.
-    - If admin@haemopulse.org or an older admin identity exists, migrates login email to admin@haemopulse.in.
-    - If no admin exists in a fresh database, initializes admin@haemopulse.in securely.
+    - If legacy admin identities exist, migrates login email to ashwinkumarnsrao@gmail.com.
+    - Disables authorization for any other administrator accounts.
+    - If no admin exists in a fresh database, initializes ashwinkumarnsrao@gmail.com securely.
     - Respects environment variable ADMIN_PASSWORD / ADMIN_INITIAL_PASSWORD or HAEMOPULSE_ADMIN_PASSWORD_HASH if provided.
     - Never exposes passwords or password hashes in logs.
     """
@@ -998,11 +1007,11 @@ def ensure_admin_account(conn: Any = None) -> dict[str, Any]:
         conn = get_db_connection()
         close_conn = True
 
-    designated_email = DESIGNATED_ADMIN_EMAIL
+    designated_email = get_designated_admin_email()
     result: dict[str, Any] = {"status": "unchanged", "email": designated_email}
 
     try:
-        # 1. Check if admin@haemopulse.in already exists
+        # 1. Check if designated admin already exists
         existing_designated = conn.execute(
             "SELECT * FROM users WHERE LOWER(email) = LOWER(?)", (designated_email,)
         ).fetchone()
@@ -1014,20 +1023,54 @@ def ensure_admin_account(conn: Any = None) -> dict[str, Any]:
                 u_dict = {}
             u_id = u_dict.get("id")
             if u_id:
-                if u_dict.get("role") != "ROLE_ADMIN" or u_dict.get("status") != "ACTIVE" or not u_dict.get("is_verified"):
-                    conn.execute(
-                        "UPDATE users SET role = 'ROLE_ADMIN', status = 'ACTIVE', is_verified = 1 WHERE id = ?",
-                        (u_id,)
-                    )
-                    conn.commit()
+                # Check if explicit reset requested via env
+                force_reset = os.getenv("ADMIN_RESET_PASSWORD", "").strip().lower() in ("true", "1", "yes")
+                env_pw = (os.getenv("ADMIN_PASSWORD") or os.getenv("ADMIN_INITIAL_PASSWORD") or "").strip()
+                env_hash = (os.getenv("HAEMOPULSE_ADMIN_PASSWORD_HASH") or os.getenv("ADMIN_PASSWORD_HASH") or "").strip()
+
+                update_fields = ["role = 'ROLE_ADMIN'", "status = 'ACTIVE'", "is_verified = 1"]
+                params: list[Any] = []
+
+                if force_reset and (env_hash or env_pw):
+                    if env_hash and env_hash.startswith("pbkdf2_"):
+                        update_fields.append("password = ?")
+                        params.append(env_hash)
+                    elif env_pw and len(env_pw) >= 8:
+                        update_fields.append("password = ?")
+                        params.append(_hash_pbkdf2_admin(env_pw))
+
+                sql = f"UPDATE users SET {', '.join(update_fields)} WHERE id = ?"
+                params.append(u_id)
+                conn.execute(sql, tuple(params))
+                conn.commit()
+
+            # Disable legacy / unauthorized administrator accounts while preserving hospital and donor accounts
+            conn.execute("""
+                UPDATE users
+                SET role = 'ROLE_DISABLED', status = 'DISABLED'
+                WHERE role = 'ROLE_ADMIN'
+                  AND LOWER(email) != LOWER(?)
+                  AND (
+                      LOWER(email) IN ('admin@haemopulse.in', 'admin@haemopulse.org', 'admin@bloodbank.org')
+                      OR (
+                          LOWER(email) NOT LIKE '%.invalid'
+                          AND LOWER(email) NOT LIKE '%.test'
+                          AND LOWER(email) NOT LIKE '%@example.com'
+                          AND LOWER(email) NOT LIKE '%@dh-test.invalid'
+                      )
+                  )
+            """, (designated_email,))
+            conn.commit()
+
             result["status"] = "exists"
             result["user_id"] = u_id
             return result
 
-        # 2. Check if a legacy admin exists (e.g. admin@haemopulse.org, admin@bloodbank.org, or role = 'ROLE_ADMIN')
+        # 2. Check if a legacy admin exists (e.g. admin@haemopulse.in, admin@haemopulse.org, admin@bloodbank.org, or role = 'ROLE_ADMIN')
         legacy_admin = conn.execute("""
             SELECT * FROM users
             WHERE role = 'ROLE_ADMIN'
+               OR LOWER(email) = 'admin@haemopulse.in'
                OR LOWER(email) = 'admin@haemopulse.org'
                OR LOWER(email) = 'admin@bloodbank.org'
             ORDER BY id ASC
@@ -1041,11 +1084,27 @@ def ensure_admin_account(conn: Any = None) -> dict[str, Any]:
                 leg_dict = {}
             leg_id = leg_dict.get("id")
             if leg_id:
-                # Migrate legacy admin login identity to admin@haemopulse.in PRESERVING existing password hash
+                # Migrate legacy admin login identity to designated_email PRESERVING existing password hash
                 conn.execute(
-                    "UPDATE users SET email = ?, name = 'System Admin', is_verified = 1, status = 'ACTIVE', role = 'ROLE_ADMIN' WHERE id = ?",
+                    "UPDATE users SET email = ?, name = 'Ashwin', is_verified = 1, status = 'ACTIVE', role = 'ROLE_ADMIN' WHERE id = ?",
                     (designated_email, leg_id)
                 )
+                # Disable any remaining other administrator accounts
+                conn.execute("""
+                    UPDATE users
+                    SET role = 'ROLE_DISABLED', status = 'DISABLED'
+                    WHERE role = 'ROLE_ADMIN'
+                      AND LOWER(email) != LOWER(?)
+                      AND (
+                          LOWER(email) IN ('admin@haemopulse.in', 'admin@haemopulse.org', 'admin@bloodbank.org')
+                          OR (
+                              LOWER(email) NOT LIKE '%.invalid'
+                              AND LOWER(email) NOT LIKE '%.test'
+                              AND LOWER(email) NOT LIKE '%@example.com'
+                              AND LOWER(email) NOT LIKE '%@dh-test.invalid'
+                          )
+                      )
+                """, (designated_email,))
                 conn.commit()
             result["status"] = "migrated"
             result["user_id"] = leg_id
@@ -1065,8 +1124,24 @@ def ensure_admin_account(conn: Any = None) -> dict[str, Any]:
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO users (name, email, password, phone, role, is_verified, status, must_change_password)
-            VALUES ('System Admin', ?, ?, '+919900112233', 'ROLE_ADMIN', 1, 'ACTIVE', 0)
+            VALUES ('Ashwin', ?, ?, '+919731742855', 'ROLE_ADMIN', 1, 'ACTIVE', 0)
         """, (designated_email, pw_hash))
+        # Disable any other administrator accounts
+        conn.execute("""
+            UPDATE users
+            SET role = 'ROLE_DISABLED', status = 'DISABLED'
+            WHERE role = 'ROLE_ADMIN'
+              AND LOWER(email) != LOWER(?)
+              AND (
+                  LOWER(email) IN ('admin@haemopulse.in', 'admin@haemopulse.org', 'admin@bloodbank.org')
+                  OR (
+                      LOWER(email) NOT LIKE '%.invalid'
+                      AND LOWER(email) NOT LIKE '%.test'
+                      AND LOWER(email) NOT LIKE '%@example.com'
+                      AND LOWER(email) NOT LIKE '%@dh-test.invalid'
+                  )
+              )
+        """, (designated_email,))
         conn.commit()
         result["status"] = "created"
         result["user_id"] = cur.lastrowid

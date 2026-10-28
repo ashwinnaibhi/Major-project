@@ -83,8 +83,26 @@ def provision_user(role_name: str | None = None, name: str = "", email: str = ""
                     "UPDATE users SET password = ?, is_verified = 1, status = 'ACTIVE' WHERE id = ?",
                     (hashed_pw, existing["id"])
                 )
+                if clean_role == "ROLE_ADMIN":
+                    conn.execute(
+                        "UPDATE users SET role = 'ROLE_DISABLED', status = 'DISABLED' WHERE role = 'ROLE_ADMIN' AND LOWER(email) != LOWER(?)",
+                        (clean_email,)
+                    )
                 conn.commit()
                 print(f"Successfully updated credentials for existing {clean_role} account {clean_email}.")
+                return True
+            elif clean_role == "ROLE_ADMIN":
+                hashed_pw = hash_password(password)
+                conn.execute(
+                    "UPDATE users SET password = ?, role = 'ROLE_ADMIN', is_verified = 1, status = 'ACTIVE' WHERE id = ?",
+                    (hashed_pw, existing["id"])
+                )
+                conn.execute(
+                    "UPDATE users SET role = 'ROLE_DISABLED', status = 'DISABLED' WHERE role = 'ROLE_ADMIN' AND LOWER(email) != LOWER(?)",
+                    (clean_email,)
+                )
+                conn.commit()
+                print(f"Successfully provisioned/updated credentials for ROLE_ADMIN account {clean_email}.")
                 return True
             else:
                 print(f"Error: User '{clean_email}' already exists with different role '{existing_role}'.")
@@ -95,6 +113,11 @@ def provision_user(role_name: str | None = None, name: str = "", email: str = ""
             INSERT INTO users (name, email, password, phone, role, is_verified, status)
             VALUES (?, ?, ?, ?, ?, 1, 'ACTIVE')
         """, (clean_name, clean_email, hashed_pw, phone.strip(), clean_role))
+        if clean_role == "ROLE_ADMIN":
+            conn.execute(
+                "UPDATE users SET role = 'ROLE_DISABLED', status = 'DISABLED' WHERE role = 'ROLE_ADMIN' AND LOWER(email) != LOWER(?)",
+                (clean_email,)
+            )
         conn.commit()
         print(f"Successfully provisioned {clean_role} account for {clean_email}.")
         return True

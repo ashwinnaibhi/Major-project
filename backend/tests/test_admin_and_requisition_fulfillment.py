@@ -25,6 +25,7 @@ import sys
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -93,43 +94,44 @@ class AdminAndRequisitionFulfillmentTestCase(unittest.TestCase):
         admin_email = "test_sys_admin@haemopulse.org"
         admin_pass = "AdminSuperSecret2026!"
 
-        # Provision administrator
-        success = create_role_user.provision_role_user(
-            role="ADMIN",
-            name="Test System Administrator",
-            email=admin_email,
-            phone="+919988776655",
-            password=admin_pass
-        )
-        self.assertTrue(success, "Administrator provisioning must succeed")
+        with mock.patch.dict(os.environ, {"ADMIN_EMAIL": admin_email}):
+            # Provision administrator
+            success = create_role_user.provision_role_user(
+                role="ADMIN",
+                name="Test System Administrator",
+                email=admin_email,
+                phone="+919988776655",
+                password=admin_pass
+            )
+            self.assertTrue(success, "Administrator provisioning must succeed")
 
-        # Verify in DB
-        user_row = self.conn.execute("SELECT * FROM users WHERE LOWER(email) = LOWER(?)", (admin_email,)).fetchone()
-        self.assertIsNotNone(user_row)
-        self.assertEqual(user_row["role"], "ROLE_ADMIN")
+            # Verify in DB
+            user_row = self.conn.execute("SELECT * FROM users WHERE LOWER(email) = LOWER(?)", (admin_email,)).fetchone()
+            self.assertIsNotNone(user_row)
+            self.assertEqual(user_row["role"], "ROLE_ADMIN")
 
-        # Authenticate via /api/v1/auth/login
-        res = client.post("/api/v1/auth/login", json={
-            "email": admin_email,
-            "password": admin_pass
-        })
-        self.assertEqual(res.status_code, 200)
-        data = res.json()
-        self.assertIn("token", data)
-        self.assertEqual(data["user"]["role"], "ROLE_ADMIN")
+            # Authenticate via /api/v1/auth/login
+            res = client.post("/api/v1/auth/login", json={
+                "email": admin_email,
+                "password": admin_pass
+            })
+            self.assertEqual(res.status_code, 200)
+            data = res.json()
+            self.assertIn("token", data)
+            self.assertEqual(data["user"]["role"], "ROLE_ADMIN")
 
-        admin_token = data["token"]
+            admin_token = data["token"]
 
-        # Access protected admin endpoint
-        inv_res = client.get("/api/v1/inventory", headers={"Authorization": f"Bearer {admin_token}"})
-        self.assertEqual(inv_res.status_code, 200)
+            # Access protected admin endpoint
+            inv_res = client.get("/api/v1/inventory", headers={"Authorization": f"Bearer {admin_token}"})
+            self.assertEqual(inv_res.status_code, 200)
 
-        # Test invalid password rejection
-        bad_res = client.post("/api/v1/auth/login", json={
-            "email": admin_email,
-            "password": "WrongPassword999!"
-        })
-        self.assertEqual(bad_res.status_code, 401)
+            # Test invalid password rejection
+            bad_res = client.post("/api/v1/auth/login", json={
+                "email": admin_email,
+                "password": "WrongPassword999!"
+            })
+            self.assertEqual(bad_res.status_code, 401)
 
     def test_02_rbac_blocks_non_admin_from_admin_endpoints(self):
         # Register a donor

@@ -32,7 +32,15 @@ if ENV_PATH.is_file():
 else:
     load_dotenv()
 
-from database import get_db, is_postgres, init_postgres_schema, get_db_connection, ensure_admin_account
+from database import (
+    get_db,
+    is_postgres,
+    init_postgres_schema,
+    get_db_connection,
+    ensure_admin_account,
+    DESIGNATED_ADMIN_EMAIL,
+    get_designated_admin_email,
+)
 from provision_hospitals import generate_hospital_username, DEFAULT_INITIAL_PASSWORD, provision_all_hospitals, normalize_taluk_name
 from email_service import (
     send_verification_email,
@@ -218,7 +226,10 @@ def get_current_user(authorization: Optional[str] = Header(None),
         ).fetchone()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    return dict(user)
+    user_dict = dict(user)
+    if str(user_dict.get("status", "")).upper() in ("DISABLED", "DEACTIVATED", "INACTIVE") or str(user_dict.get("role", "")).upper() == "ROLE_DISABLED":
+        raise HTTPException(status_code=403, detail="Account is disabled or deactivated")
+    return user_dict
 
 
 def get_optional_user(authorization: Optional[str] = Header(None),
@@ -505,7 +516,11 @@ def _do_login(email: str, password: str, conn: sqlite3.Connection) -> dict:
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    stored_pw = user["password"]
+    user_dict = dict(user)
+    if str(user_dict.get("status", "")).upper() in ("DISABLED", "DEACTIVATED", "INACTIVE") or str(user_dict.get("role", "")).upper() == "ROLE_DISABLED":
+        raise HTTPException(status_code=403, detail="Account is disabled or deactivated")
+
+    stored_pw = user_dict["password"]
     valid, needs_rehash = verify_password(password, stored_pw)
     if not valid:
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -1342,7 +1357,8 @@ def delete_request(request_id: int,
 
 @app.get("/api/v1/admin/verify")
 def verify_admin_session(user: dict = Depends(get_current_user)):
-    if user.get("role") != "ROLE_ADMIN":
+    designated = get_designated_admin_email()
+    if user.get("role") != "ROLE_ADMIN" or (user.get("email") or "").strip().lower() != designated:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access forbidden: Administrator access required."

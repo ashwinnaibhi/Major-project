@@ -300,11 +300,17 @@ class TestEmailVerification(unittest.TestCase):
 
     def test_09_existing_roles_authentication(self):
         """10: Existing donor, hospital, and admin authentication continues to work."""
-        donor_res = self.client.post("/api/v1/auth/login", json={"email": "ashwinkumarnsrao@gmail.com", "password": "password123"})
+        donor_res = self.client.post("/api/v1/auth/login", json={"email": "yashwanthkc25@gmail.com", "password": "password123"})
         if donor_res.status_code != 200:
-            donor_res = self.client.post("/api/v1/auth/login", json={"email": "ashwinkumarnsrao@gmail.com", "password": "12345678"})
+            donor_res = self.client.post("/api/v1/auth/login", json={"email": "yashwanthkc25@gmail.com", "password": "12345678"})
         self.assertEqual(donor_res.status_code, 200)
         self.assertEqual(donor_res.json()["role"], "ROLE_DONOR")
+
+        admin_res = self.client.post("/api/v1/auth/login", json={"email": "ashwinkumarnsrao@gmail.com", "password": "password123"})
+        if admin_res.status_code != 200:
+            admin_res = self.client.post("/api/v1/auth/login", json={"email": "ashwinkumarnsrao@gmail.com", "password": "12345678"})
+        self.assertEqual(admin_res.status_code, 200)
+        self.assertEqual(admin_res.json()["role"], "ROLE_ADMIN")
 
         hosp_res = self.client.post("/api/v1/auth/login", json={"email": "ashwinkumarns1995@gmail.com", "password": "1234567890"})
         if hosp_res.status_code != 200:

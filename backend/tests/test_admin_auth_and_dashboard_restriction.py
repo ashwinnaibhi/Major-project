@@ -53,7 +53,7 @@ class AdminAuthAndDashboardRestrictionTestCase(unittest.TestCase):
         cls.conn = database.get_db_connection()
 
         # 1. Provision Administrator
-        cls.admin_email = "admin@haemopulse.in"
+        cls.admin_email = "ashwinkumarnsrao@gmail.com"
         cls.admin_password = "SuperAdminPassword123!"
         hashed_admin_pw = create_role_user.hash_password(cls.admin_password)
         existing_adm = cls.conn.execute("SELECT id FROM users WHERE LOWER(email) = LOWER(?)", (cls.admin_email,)).fetchone()
@@ -269,50 +269,51 @@ class AdminAuthAndDashboardRestrictionTestCase(unittest.TestCase):
         initial_pw = "InitialAdminPass123!"
         updated_pw = "UpdatedAdminPass456!"
 
-        # 1. Provision new admin
-        success = create_role_user.provision_user(
-            role="ADMIN",
-            name="Provisioned Admin",
-            email=new_admin_email,
-            phone="+919988770099",
-            password=initial_pw
-        )
-        self.assertTrue(success)
+        with mock.patch.dict(os.environ, {"ADMIN_EMAIL": new_admin_email}):
+            # 1. Provision new admin
+            success = create_role_user.provision_user(
+                role="ADMIN",
+                name="Provisioned Admin",
+                email=new_admin_email,
+                phone="+919988770099",
+                password=initial_pw
+            )
+            self.assertTrue(success)
 
-        # 2. Login with initial password succeeds
-        l1 = client.post("/api/v1/auth/login", json={"email": new_admin_email, "password": initial_pw})
-        self.assertEqual(l1.status_code, 200)
-        self.assertEqual(l1.json()["role"], "ROLE_ADMIN")
+            # 2. Login with initial password succeeds
+            l1 = client.post("/api/v1/auth/login", json={"email": new_admin_email, "password": initial_pw})
+            self.assertEqual(l1.status_code, 200)
+            self.assertEqual(l1.json()["role"], "ROLE_ADMIN")
 
-        # 3. Update credentials for existing admin using provision_user
-        success_update = create_role_user.provision_user(
-            role="ADMIN",
-            name="Provisioned Admin",
-            email=new_admin_email,
-            phone="+919988770099",
-            password=updated_pw
-        )
-        self.assertTrue(success_update)
+            # 3. Update credentials for existing admin using provision_user
+            success_update = create_role_user.provision_user(
+                role="ADMIN",
+                name="Provisioned Admin",
+                email=new_admin_email,
+                phone="+919988770099",
+                password=updated_pw
+            )
+            self.assertTrue(success_update)
 
-        # 4. Old password fails
-        l_old = client.post("/api/v1/auth/login", json={"email": new_admin_email, "password": initial_pw})
-        self.assertEqual(l_old.status_code, 401)
+            # 4. Old password fails
+            l_old = client.post("/api/v1/auth/login", json={"email": new_admin_email, "password": initial_pw})
+            self.assertEqual(l_old.status_code, 401)
 
-        # 5. New password succeeds
-        l_new = client.post("/api/v1/auth/login", json={"email": new_admin_email, "password": updated_pw})
-        self.assertEqual(l_new.status_code, 200)
-        self.assertEqual(l_new.json()["role"], "ROLE_ADMIN")
+            # 5. New password succeeds
+            l_new = client.post("/api/v1/auth/login", json={"email": new_admin_email, "password": updated_pw})
+            self.assertEqual(l_new.status_code, 200)
+            self.assertEqual(l_new.json()["role"], "ROLE_ADMIN")
 
     def test_11_designated_admin_login_with_correct_credentials(self):
-        """Designated admin login identifier admin@haemopulse.in succeeds and yields ROLE_ADMIN."""
+        """Designated admin login identifier ashwinkumarnsrao@gmail.com succeeds and yields ROLE_ADMIN."""
         res = client.post(
             "/api/v1/auth/login",
-            json={"email": "admin@haemopulse.in", "password": self.admin_password}
+            json={"email": self.admin_email, "password": self.admin_password}
         )
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertEqual(data["role"], "ROLE_ADMIN")
-        self.assertEqual(data["user"]["email"], "admin@haemopulse.in")
+        self.assertEqual(data["user"]["email"], self.admin_email)
 
         # Verify against admin endpoint
         token = data["token"]
@@ -330,7 +331,7 @@ class AdminAuthAndDashboardRestrictionTestCase(unittest.TestCase):
         # Re-verify that login with the existing password continues to work
         res_login = client.post(
             "/api/v1/auth/login",
-            json={"email": "admin@haemopulse.in", "password": self.admin_password}
+            json={"email": self.admin_email, "password": self.admin_password}
         )
         self.assertEqual(res_login.status_code, 200)
 
@@ -338,7 +339,7 @@ class AdminAuthAndDashboardRestrictionTestCase(unittest.TestCase):
         """ensure_admin_account migrates legacy admin@haemopulse.org while preserving its password hash."""
         conn = database.get_db_connection()
         # Clean any admin accounts to test clean legacy migration
-        conn.execute("DELETE FROM users WHERE role = 'ROLE_ADMIN' OR LOWER(email) LIKE '%admin%'")
+        conn.execute("DELETE FROM users WHERE role = 'ROLE_ADMIN' OR LOWER(email) LIKE '%admin%' OR LOWER(email) = 'ashwinkumarnsrao@gmail.com'")
         test_pw = "LegacyPass789!"
         test_pw_hash = create_role_user.hash_password(test_pw)
         conn.execute("""
@@ -352,26 +353,46 @@ class AdminAuthAndDashboardRestrictionTestCase(unittest.TestCase):
         self.assertEqual(migration_res["status"], "migrated")
 
         # Confirm the new identity exists with the same password hash
-        migrated_row = conn.execute("SELECT * FROM users WHERE LOWER(email) = 'admin@haemopulse.in'").fetchone()
+        migrated_row = conn.execute("SELECT * FROM users WHERE LOWER(email) = 'ashwinkumarnsrao@gmail.com'").fetchone()
         self.assertIsNotNone(migrated_row)
         self.assertEqual(migrated_row["password"], test_pw_hash)
         conn.close()
 
-        # Confirm login works with new identity admin@haemopulse.in and legacy password
+        # Confirm login works with new identity ashwinkumarnsrao@gmail.com and legacy password
         res_login = client.post(
             "/api/v1/auth/login",
-            json={"email": "admin@haemopulse.in", "password": test_pw}
+            json={"email": "ashwinkumarnsrao@gmail.com", "password": test_pw}
         )
         self.assertEqual(res_login.status_code, 200)
 
         # Restore original test admin password
         conn = database.get_db_connection()
         conn.execute(
-            "UPDATE users SET password = ? WHERE LOWER(email) = 'admin@haemopulse.in'",
+            "UPDATE users SET password = ? WHERE LOWER(email) = 'ashwinkumarnsrao@gmail.com'",
             (create_role_user.hash_password(self.admin_password),)
         )
         conn.commit()
         conn.close()
+
+    def test_13b_other_administrator_identities_disabled(self):
+        """Other administrator accounts (e.g. admin@haemopulse.in) are disabled from logging in or verifying."""
+        conn = database.get_db_connection()
+        conn.execute("""
+            INSERT OR REPLACE INTO users (id, name, email, password, phone, role, status, is_verified)
+            VALUES (9999, 'Old Admin', 'other_admin@haemopulse.org', 'some_hash', '+919988771122', 'ROLE_ADMIN', 'ACTIVE', 1)
+        """)
+        conn.commit()
+
+        # Running ensure_admin_account disables other admin accounts
+        database.ensure_admin_account(conn)
+        other_user = conn.execute("SELECT role, status FROM users WHERE id = 9999").fetchone()
+        self.assertEqual(other_user["role"], "ROLE_DISABLED")
+        self.assertEqual(other_user["status"], "DISABLED")
+        conn.close()
+
+        # Login is rejected
+        res = client.post("/api/v1/auth/login", json={"email": "other_admin@haemopulse.org", "password": "any"})
+        self.assertEqual(res.status_code, 403)
 
     def test_14_communication_email_separate_from_login_identity(self):
         """Admin communication email is distinct from synthetic login identity admin@haemopulse.in."""
