@@ -19,14 +19,16 @@ export default function AdminDashboard({ onNavigate, donorsList = [], requestsLi
   const [adminPassword, setAdminPassword] = useState('');
   const [adminLoginLoading, setAdminLoginLoading] = useState(false);
   const [adminLoginError, setAdminLoginError] = useState('');
-  const [isValidatingSession, setIsValidatingSession] = useState(false);
-  const [isVerifiedAdmin, setIsVerifiedAdmin] = useState(false);
 
   const isPotentialAdmin = Boolean(
     currentUser?.token &&
     currentUser?.isLoggedIn &&
     ['ADMIN', 'ROLE_ADMIN'].includes(String(currentUser?.role || '').toUpperCase().replace(/^ROLE_/, ''))
   );
+
+  const [isValidatingSession, setIsValidatingSession] = useState(() => isPotentialAdmin);
+  const [isVerifiedAdmin, setIsVerifiedAdmin] = useState(false);
+  const isAdmin = isVerifiedAdmin;
 
   // Validate administrator session with backend security manager
   useEffect(() => {
@@ -40,7 +42,10 @@ export default function AdminDashboard({ onNavigate, donorsList = [], requestsLi
       return;
     }
 
-    setIsValidatingSession(true);
+    if (!isVerifiedAdmin) {
+      setIsValidatingSession(true);
+    }
+
     fetch(`${API_BASE}/api/v1/admin/verify`, {
       headers: { Authorization: `Bearer ${currentUser.token}` }
     })
@@ -50,7 +55,7 @@ export default function AdminDashboard({ onNavigate, donorsList = [], requestsLi
         if (res.ok && (data.authenticated || data.status === 'ok')) {
           setIsVerifiedAdmin(true);
           setAdminLoginError('');
-        } else {
+        } else if (res.status === 401 || res.status === 403) {
           setIsVerifiedAdmin(false);
           if (typeof onLogout === 'function') {
             onLogout(false);
@@ -60,12 +65,13 @@ export default function AdminDashboard({ onNavigate, donorsList = [], requestsLi
           } else {
             setAdminLoginError('Session expired or invalid. Please sign in with administrator credentials.');
           }
+        } else {
+          console.warn(`Admin verification returned unexpected status ${res.status}`);
         }
       })
-      .catch(() => {
+      .catch((err) => {
         if (!cancelled) {
-          setIsVerifiedAdmin(false);
-          setAdminLoginError('Unable to verify administrator session. Please sign in again.');
+          console.error('Admin session verification network error:', err);
         }
       })
       .finally(() => {
@@ -128,10 +134,6 @@ export default function AdminDashboard({ onNavigate, donorsList = [], requestsLi
     fetch(`${API_BASE}/api/v1/inventory`, { headers: { Authorization: `Bearer ${currentUser.token}` } })
       .then(async (response) => {
         if (!response.ok) {
-          if (response.status === 401 || response.status === 403) {
-            setIsVerifiedAdmin(false);
-            if (typeof onLogout === 'function') onLogout(false);
-          }
           throw new Error('Inventory summary unavailable.');
         }
         return response.json();
@@ -139,7 +141,7 @@ export default function AdminDashboard({ onNavigate, donorsList = [], requestsLi
       .then((data) => { if (!cancelled && Array.isArray(data)) setInventoryRows(data); })
       .catch(() => { if (!cancelled) setInventoryRows(null); });
     return () => { cancelled = true; };
-  }, [isVerifiedAdmin, currentUser?.token, onLogout]);
+  }, [isVerifiedAdmin, currentUser?.token]);
 
   useEffect(() => {
     let cancelled = false;
@@ -174,26 +176,28 @@ export default function AdminDashboard({ onNavigate, donorsList = [], requestsLi
   const pendingCount = requestsList.filter((request) => String(request.status || 'PENDING').toUpperCase() === 'PENDING').length;
   const emergencyCount = requestsList.filter((request) => String(request.status || 'PENDING').toUpperCase() === 'PENDING' && String(request.urgency_level || '').toUpperCase() === 'EMERGENCY').length;
 
-  const visibleDonors = isVerifiedAdmin ? donorsList : [];
+  const visibleDonors = isVerifiedAdmin ? (Array.isArray(donorsList) ? donorsList : []) : [];
   const totalDonorsCount = visibleDonors.length;
-  const highAvailCount = visibleDonors.filter(d => d.category === 'HIGH' || d.availability_status === 'HIGH' || (d.availability_score != null && Number(d.availability_score) >= 75)).length;
+  const highAvailCount = visibleDonors.filter(d => d && (d.category === 'HIGH' || d.availability_status === 'HIGH' || (d.availability_score != null && Number(d.availability_score) >= 75))).length;
 
   const filteredDonors = useMemo(() => {
     if (!searchTerm.trim()) return visibleDonors;
     const term = searchTerm.toLowerCase();
     return visibleDonors.filter(d => 
-      (d.name && d.name.toLowerCase().includes(term)) ||
-      (d.donor_id && d.donor_id.toLowerCase().includes(term)) ||
-      (d.blood_group && d.blood_group.toLowerCase().includes(term)) ||
-      (d.blood && d.blood.toLowerCase().includes(term)) ||
-      (d.district && d.district.toLowerCase().includes(term)) ||
-      (d.taluk && d.taluk.toLowerCase().includes(term)) ||
-      (d.location && d.location.toLowerCase().includes(term))
+      Boolean(d) && (
+        (d.name && d.name.toLowerCase().includes(term)) ||
+        (d.donor_id && d.donor_id.toLowerCase().includes(term)) ||
+        (d.blood_group && d.blood_group.toLowerCase().includes(term)) ||
+        (d.blood && d.blood.toLowerCase().includes(term)) ||
+        (d.district && d.district.toLowerCase().includes(term)) ||
+        (d.taluk && d.taluk.toLowerCase().includes(term)) ||
+        (d.location && d.location.toLowerCase().includes(term))
+      )
     );
   }, [visibleDonors, searchTerm]);
 
   const totalPages = Math.max(1, Math.ceil(filteredDonors.length / pageSize));
-  const currentSafePage = Math.min(currentPage, totalPages);
+  const currentSafePage = Math.max(1, Math.min(currentPage, totalPages));
   const paginatedDonors = useMemo(() => {
     const start = (currentSafePage - 1) * pageSize;
     return filteredDonors.slice(start, start + pageSize);
@@ -398,7 +402,7 @@ export default function AdminDashboard({ onNavigate, donorsList = [], requestsLi
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60">
-              {paginatedDonors.map((donor) => (
+              {paginatedDonors.filter(Boolean).map((donor) => (
                 <tr key={donor.id || donor.donor_id} className="hover:bg-slate-900/40">
                   <td className="py-2.5 px-3 font-mono text-slate-400">{donor.donor_id || donor.id}</td>
                   <td className="py-2.5 px-3">
@@ -435,7 +439,7 @@ export default function AdminDashboard({ onNavigate, donorsList = [], requestsLi
                     <button
                       onClick={() => handleDelete(donor)}
                       title="Delete Donor Record from SQL Database"
-                      disabled={!isAdmin}
+                      disabled={!isVerifiedAdmin}
                       className="p-1.5 rounded-lg bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800 transition-colors flex items-center space-x-1 disabled:opacity-40"
                     >
                       <Trash2 className="w-3.5 h-3.5 text-rose-400" />

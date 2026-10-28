@@ -13,6 +13,7 @@ import AppointmentsView from './pages/AppointmentsView';
 import VerifyEmailPage from './pages/VerifyEmailPage';
 import HospitalAuth from './pages/HospitalAuth';
 import RoleSelection from './components/RoleSelection';
+import ErrorBoundary from './components/ErrorBoundary';
 import { ShieldAlert } from 'lucide-react';
 
 import { getApiBaseUrl } from './api/config';
@@ -418,7 +419,9 @@ export default function App() {
         />
         
         <main className="flex-1 p-6 overflow-y-auto max-w-7xl mx-auto w-full">
-          {renderContent()}
+          <ErrorBoundary onReset={() => fetchAllData(currentUser)}>
+            {renderContent()}
+          </ErrorBoundary>
         </main>
       </div>
 
